@@ -1,0 +1,2365 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DISTRIBOX &middot; Channel Intelligence</title>
+<meta name="description" content="Hotel channel revenue intelligence: gross to net room revenue, distribution cost, and modelled channel mix scenarios." />
+<!--
+  ===========================================================================
+  D6 DISTRIBOX - channel intelligence console
+  ===========================================================================
+  Single self-contained file. No build step, no network, no dependency.
+  Open it directly: file://.../frontend/index.html
+
+  Financial authority is PostgreSQL. Every rupee displayed here was read
+  out of a GENERATED ALWAYS AS ... STORED column computed by an IMMUTABLE
+  SQL function over the stored booking. This file formats, sorts and
+  compares those values; it does not derive them.
+
+  The one exception is the Mix Simulator, which replays
+  ScenarioEngine.evaluate() against the same observed channel rates.
+  tests/test_simulator_parity.py holds the browser to the Python engine,
+  to one paisa.
+  ===========================================================================
+-->
+<style>
+/* ==========================================================================
+   Design tokens
+   A restrained, near-neutral palette. Amber is reserved for active
+   navigation, the primary action and a key opportunity - never decoration.
+   Green means revenue retained, red means cost taken. Everything else is
+   grey, because in a revenue workstation most of what you read is ordinary.
+   ========================================================================== */
+:root{
+  --bg:#0B0F14;
+  --surface:#11161D;
+  --surface-2:#151B23;
+  --surface-3:#1A212A;
+  --surface-4:#1F2731;
+  --line:#1E252E;
+  --line-2:#2A323D;
+  --line-3:#39424E;
+
+  --text:#E4E9EF;
+  --muted:#8A94A2;
+  --dim:#5E6874;
+
+  --amber:#C08A2E;
+  --amber-soft:rgba(192,138,46,.10);
+  --amber-line:rgba(192,138,46,.42);
+
+  --good:#4E9E7C;
+  --bad:#BC5F5D;
+  --info:#5B87A8;
+
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+
+  --topbar-h:54px;
+}
+
+*,*::before,*::after{box-sizing:border-box;}
+html{-webkit-text-size-adjust:100%;}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font:400 13px/1.5 var(--sans);
+  -webkit-font-smoothing:antialiased;
+  font-variant-numeric:tabular-nums;
+}
+h1,h2,h3,h4{margin:0;font-weight:600;letter-spacing:-.01em;}
+p{margin:0;}
+a{color:inherit;text-decoration:none;}
+code{
+  font:400 11.5px/1 var(--mono);
+  background:var(--surface-3);
+  border:1px solid var(--line);
+  border-radius:2px;
+  padding:1px 4px;
+  color:var(--muted);
+}
+:focus-visible{outline:2px solid var(--amber);outline-offset:1px;}
+
+.skip-link{
+  position:absolute;left:-9999px;top:0;z-index:100;
+  background:var(--amber);color:#12161B;padding:8px 14px;font-weight:600;
+}
+.skip-link:focus{left:0;}
+
+.num{text-align:right;font-variant-numeric:tabular-nums;}
+.mono{font-family:var(--mono);}
+.muted{color:var(--muted);}
+.dim{color:var(--dim);}
+.good{color:var(--good);}
+.bad{color:var(--bad);}
+.nowrap{white-space:nowrap;}
+
+/* ==========================================================================
+   Shell
+   ========================================================================== */
+.shell{
+  display:grid;
+  grid-template-columns:212px minmax(0,1fr);
+  min-height:100vh;
+}
+
+/* ---- sidebar: compact, quiet, always in the same place ---- */
+.sidebar{
+  position:sticky;top:0;align-self:start;
+  height:100vh;overflow-y:auto;
+  background:var(--surface);
+  border-right:1px solid var(--line);
+  display:flex;flex-direction:column;
+  padding:14px 0 12px;
+}
+.sb-brand{padding:0 14px 14px;border-bottom:1px solid var(--line);}
+.sb-logo{
+  display:flex;align-items:center;gap:8px;
+  font-size:13px;font-weight:700;letter-spacing:.10em;
+}
+.sb-mark{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:24px;height:20px;
+  background:var(--amber);color:#12161B;
+  border-radius:2px;
+  font-size:11px;font-weight:800;letter-spacing:.02em;
+}
+.sb-tag{
+  margin-top:5px;padding-left:32px;
+  font-size:10.5px;color:var(--dim);letter-spacing:.03em;
+}
+
+.sb-nav{padding:12px 0;flex:1;}
+.sb-nav h2{
+  padding:0 14px 6px;
+  font-size:9.5px;font-weight:600;letter-spacing:.11em;
+  text-transform:uppercase;color:var(--dim);
+}
+.sb-nav ul{list-style:none;margin:0;padding:0;}
+.sb-nav a{
+  display:flex;align-items:center;gap:9px;
+  padding:6px 14px;
+  border-left:2px solid transparent;
+  font-size:12.5px;color:var(--muted);
+  transition:color .12s,background .12s,border-color .12s;
+}
+.sb-nav a:hover{color:var(--text);background:rgba(255,255,255,.028);}
+.sb-nav a[aria-current="true"]{
+  color:var(--text);
+  border-left-color:var(--amber);
+  background:var(--amber-soft);
+  font-weight:500;
+}
+
+.sb-foot{
+  padding:11px 14px 0;border-top:1px solid var(--line);
+  font-size:11px;color:var(--muted);
+}
+.sb-foot .hotel{color:var(--text);font-weight:500;font-size:11.5px;}
+.sb-foot #sb-period{margin-top:2px;color:var(--dim);font-size:10.5px;}
+
+/* synthetic data: a status indicator, not a banner */
+.status-chip{
+  display:inline-flex;align-items:center;gap:6px;
+  margin-top:9px;padding:3px 7px;
+  border:1px solid var(--line-2);border-radius:2px;
+  background:var(--surface-2);
+  font-size:9px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--muted);cursor:pointer;font-family:inherit;
+}
+.status-chip:hover{border-color:var(--line-3);color:var(--text);}
+.status-chip .dot{
+  width:5px;height:5px;border-radius:50%;
+  background:var(--amber);flex:none;
+}
+.status-chip[aria-expanded="true"]{
+  border-color:var(--amber);color:var(--text);
+}
+.status-chip[aria-expanded="true"] .dot{
+  box-shadow:0 0 0 2px var(--amber-soft);
+}
+
+/* Provenance, revealed on demand. Deliberately not a banner: it sits in the
+   sidebar so it never competes with the figures for attention. */
+#synthetic-detail{
+  margin-top:9px;padding:9px 10px;
+  border:1px solid var(--line-2);border-radius:2px;
+  background:var(--surface-2);
+  font-size:10.5px;line-height:1.55;color:var(--muted);
+}
+#synthetic-detail p+p{margin-top:7px;}
+#synthetic-detail b{color:var(--text);font-weight:600;}
+#synthetic-detail code{
+  font-family:var(--mono);font-size:10px;color:var(--text);
+  background:var(--surface-3);padding:0 3px;border-radius:2px;
+}
+
+.main{min-width:0;}
+
+/* ---- topbar ---- */
+.topbar{
+  position:sticky;top:0;z-index:20;
+  height:var(--topbar-h);
+  display:flex;align-items:center;justify-content:space-between;gap:20px;
+  padding:0 20px;
+  background:rgba(11,15,20,.94);
+  border-bottom:1px solid var(--line);
+}
+.topbar h1{font-size:14.5px;font-weight:600;}
+.crumb{font-size:11px;color:var(--dim);margin-top:1px;}
+.tb-right{display:flex;align-items:center;gap:22px;}
+.field{display:flex;flex-direction:column;gap:1px;}
+.field label{
+  font-size:9px;font-weight:600;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--dim);
+}
+.field .val{font-size:12px;color:var(--text);}
+.status{
+  display:inline-flex;align-items:center;gap:6px;
+  font-size:11px;color:var(--muted);
+  padding-left:22px;border-left:1px solid var(--line);
+}
+.status .dot{width:6px;height:6px;border-radius:50%;background:var(--good);flex:none;}
+
+.content{padding:0 20px 44px;max-width:1720px;}
+
+/* ==========================================================================
+   Sections: a rule and a header, not a floating card
+   ========================================================================== */
+section{padding-top:20px;}
+section + section{margin-top:20px;border-top:1px solid var(--line);}
+
+.sec-head{
+  display:flex;align-items:flex-end;justify-content:space-between;
+  gap:28px;margin-bottom:13px;flex-wrap:wrap;
+}
+.sec-label{
+  font-size:9.5px;font-weight:600;letter-spacing:.11em;
+  text-transform:uppercase;color:var(--dim);
+}
+.sec-head h2{font-size:17px;font-weight:600;margin-top:3px;}
+.sec-head p{font-size:12px;color:var(--muted);margin-top:4px;max-width:82ch;}
+.sec-aside{
+  font-size:10.5px;color:var(--dim);text-align:right;white-space:nowrap;
+  padding-bottom:2px;
+}
+
+/* ---- panels ---- */
+.panel{
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:3px;
+  overflow:hidden;
+}
+.panel-hd{
+  display:flex;align-items:center;justify-content:space-between;gap:14px;
+  padding:8px 12px;
+  background:var(--surface-2);
+  border-bottom:1px solid var(--line);
+}
+.panel-hd h3{
+  font-size:9.5px;font-weight:600;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--muted);
+}
+.panel-bd{padding:12px;}
+.panel-bd.flush{padding:0;}
+
+/* Section layouts run on a 12-column grid. The shorthand classes name spans
+   in twelfths, so every panel edge in the page lands on the same rhythm. */
+.cols{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:14px;}
+.c-2{grid-template-columns:repeat(12,minmax(0,1fr));}
+.c-2>*{grid-column:span 6;}
+.c-32{grid-template-columns:repeat(12,minmax(0,1fr));}
+.c-32>*:first-child{grid-column:span 8;}
+.c-32>*:last-child{grid-column:span 4;}
+.c-23{grid-template-columns:repeat(12,minmax(0,1fr));}
+.c-23>*:first-child{grid-column:span 4;}
+.c-23>*:last-child{grid-column:span 8;}
+
+/* ==========================================================================
+   Metric panel - one cohesive financial summary, divided by hairlines
+   ========================================================================== */
+.metric-panel{
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:3px;
+  overflow:hidden;
+}
+.metric-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));}
+.metric-row + .metric-row{border-top:1px solid var(--line);}
+.metric{
+  padding:11px 14px 12px;
+  border-left:1px solid var(--line);
+  min-width:0;
+}
+.metric:first-child{border-left:0;}
+.metric .t{
+  font-size:9.5px;font-weight:600;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--dim);
+}
+.metric .v{
+  font-size:16px;font-weight:600;margin-top:4px;
+  font-variant-numeric:tabular-nums;letter-spacing:-.01em;
+}
+.metric.primary .v{font-size:26px;letter-spacing:-.025em;line-height:1.15;}
+.metric .n{font-size:10.5px;color:var(--muted);margin-top:3px;}
+.metric .n b{color:var(--text);font-weight:500;}
+
+/* ==========================================================================
+   Labels, buttons, form controls
+   ========================================================================== */
+.lbl{
+  display:inline-block;
+  font-size:9px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;
+  padding:1px 5px;border-radius:2px;border:1px solid;
+  white-space:nowrap;
+}
+.lbl-observed{color:var(--info);border-color:rgba(91,135,168,.45);}
+.lbl-modelled{color:var(--amber);border-color:var(--amber-line);}
+.lbl-scenario{color:var(--muted);border-color:var(--line-2);}
+.lbl-direct{color:var(--good);border-color:rgba(78,158,124,.45);}
+.lbl-leak{color:var(--bad);border-color:rgba(188,95,93,.45);}
+
+.btn{
+  font:500 12px var(--sans);
+  padding:5px 11px;
+  border:1px solid var(--line-2);
+  border-radius:3px;
+  background:var(--surface-3);
+  color:var(--text);
+  cursor:pointer;
+  transition:background .12s,border-color .12s;
+}
+.btn:hover{background:var(--surface-4);border-color:var(--line-3);}
+.btn-primary{background:var(--amber);border-color:var(--amber);color:#12161B;font-weight:600;}
+.btn-primary:hover{background:#D19A38;border-color:#D19A38;}
+.btn-ghost{background:transparent;}
+.btn-sm{padding:3px 8px;font-size:11.5px;}
+.btn[disabled],.btn:disabled{opacity:.4;cursor:not-allowed;}
+.btn[disabled]:hover{background:var(--surface-3);border-color:var(--line-2);}
+
+input[type="search"],input[type="date"],input[type="number"],select{
+  font:400 12px var(--sans);
+  background:var(--surface-3);
+  color:var(--text);
+  border:1px solid var(--line-2);
+  border-radius:3px;
+  padding:4px 8px;
+  min-width:0;
+}
+input::placeholder{color:var(--dim);}
+select{cursor:pointer;}
+
+input[type="range"]{
+  -webkit-appearance:none;appearance:none;
+  width:100%;height:16px;background:transparent;cursor:pointer;margin:0;
+}
+input[type="range"]::-webkit-slider-runnable-track{
+  height:3px;background:var(--line-2);border-radius:2px;
+}
+input[type="range"]::-webkit-slider-thumb{
+  -webkit-appearance:none;appearance:none;
+  width:12px;height:12px;margin-top:-4.5px;
+  background:var(--text);border-radius:50%;
+  border:1px solid var(--bg);
+}
+input[type="range"]:hover::-webkit-slider-thumb{background:var(--amber);}
+input[type="range"]:disabled{cursor:not-allowed;}
+input[type="range"]:disabled::-webkit-slider-thumb{background:var(--dim);}
+
+/* ==========================================================================
+   Tables - the workhorse of this interface
+   ========================================================================== */
+.tbl-wrap{overflow-x:auto;}
+table.data{
+  width:100%;border-collapse:collapse;
+  font-size:12px;
+}
+table.data caption{
+  caption-side:bottom;
+  padding:8px 12px;
+  font-size:10.5px;color:var(--dim);text-align:left;
+  border-top:1px solid var(--line);
+}
+table.data thead th{
+  position:sticky;top:var(--topbar-h);z-index:5;
+  background:var(--surface-2);
+  font-size:9.5px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--muted);text-align:left;
+  padding:7px 10px;
+  border-bottom:1px solid var(--line-2);
+  white-space:nowrap;
+}
+table.data thead th.num{text-align:right;}
+table.data tbody td,table.data tbody th{
+  padding:6px 10px;
+  border-bottom:1px solid var(--line);
+  font-weight:400;text-align:left;vertical-align:top;
+}
+table.data tbody td.num{text-align:right;font-variant-numeric:tabular-nums;}
+table.data tbody tr:nth-child(even){background:rgba(255,255,255,.013);}
+table.data tbody tr:hover{background:rgba(192,138,46,.06);}
+table.data tfoot td,table.data tfoot th{
+  padding:7px 10px;
+  border-top:1px solid var(--line-2);
+  background:var(--surface-2);
+  font-weight:600;
+  font-size:11.5px;
+}
+table.data tfoot td.num{text-align:right;font-variant-numeric:tabular-nums;}
+
+.th-in{
+  font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;
+  display:inline-flex;align-items:center;gap:4px;
+}
+.sortmark{color:var(--dim);font-size:9px;}
+th[aria-sort="ascending"] .sortmark,th[aria-sort="descending"] .sortmark{color:var(--amber);}
+
+.chname b{font-weight:500;}
+.chname span{display:block;font-size:9.5px;color:var(--dim);letter-spacing:.05em;margin-top:1px;}
+.cellsub{display:block;font-size:10px;margin-top:1px;}
+
+/* in-cell magnitude bar: 3px, no glow, no rounding drama */
+.bar{display:block;height:3px;background:var(--surface-4);margin-top:4px;}
+.bar i{display:block;height:100%;}
+
+/* ==========================================================================
+   Overview: gross vs net paired bars - the primary visual
+   ========================================================================== */
+.gnb-row{
+  display:grid;
+  grid-template-columns:132px minmax(0,1fr) 78px 12px minmax(0,1fr) 78px 52px;
+  align-items:center;gap:10px;
+  padding:7px 12px;
+  border-bottom:1px solid var(--line);
+}
+.gnb-row:hover{background:rgba(255,255,255,.02);}
+.gnb-row.head{
+  background:var(--surface-2);
+  border-bottom:1px solid var(--line-2);
+  font-size:9.5px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--muted);padding:6px 12px;
+}
+.gnb-name{font-size:12px;}
+.gnb-track{height:9px;background:var(--surface-3);border-radius:1px;overflow:hidden;}
+.gnb-track i{display:block;height:100%;}
+.gnb-val{font-size:11.5px;text-align:right;font-variant-numeric:tabular-nums;color:var(--muted);}
+.gnb-arrow{color:var(--dim);font-size:10px;text-align:center;}
+.gnb-keep{font-size:11.5px;text-align:right;font-variant-numeric:tabular-nums;}
+
+/* ==========================================================================
+   Observation panel - small and operational
+   ========================================================================== */
+.obs{display:grid;grid-template-columns:minmax(0,1fr) 232px;}
+.obs-main{padding:12px 14px;}
+.obs-main h3{font-size:13px;font-weight:600;margin-bottom:5px;}
+.obs-main p{font-size:12px;color:var(--muted);}
+.obs-main p b{color:var(--text);font-weight:500;}
+.obs-fig{
+  border-left:1px solid var(--line);
+  padding:12px 14px;
+  background:var(--surface-2);
+}
+.obs-fig dl{margin:0;display:grid;grid-template-columns:1fr auto;gap:5px 12px;}
+.obs-fig dt{font-size:10.5px;color:var(--dim);}
+.obs-fig dd{margin:0;font-size:11.5px;text-align:right;font-variant-numeric:tabular-nums;}
+
+/* ==========================================================================
+   Leakage
+   ========================================================================== */
+.stmt{width:100%;border-collapse:collapse;font-size:12px;}
+.stmt caption{
+  caption-side:top;text-align:left;
+  font-size:9.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--muted);padding:0 0 7px;
+}
+.stmt th,.stmt td{padding:5px 10px;border-bottom:1px solid var(--line);}
+.stmt thead th{
+  font-size:9.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--muted);text-align:right;padding-bottom:6px;
+}
+.stmt thead th:first-child{text-align:left;}
+.stmt tbody th{
+  text-align:left;font-weight:400;color:var(--muted);
+}
+.stmt tbody th small{display:block;font-size:10px;color:var(--dim);}
+.stmt td{text-align:right;font-variant-numeric:tabular-nums;}
+.stmt .rule td,.stmt .rule th{
+  border-top:1px solid var(--line-2);border-bottom:0;padding-top:7px;
+}
+.stmt .total th,.stmt .total td{
+  border-top:1px solid var(--line-2);border-bottom:0;
+  font-weight:600;color:var(--text);padding-top:7px;
+}
+.stmt .total th{color:var(--text);}
+.stmt tr.sub th,.stmt tr.sub td{color:var(--muted);font-size:11.5px;}
+
+.compbar{
+  display:flex;height:10px;width:100%;
+  background:var(--surface-3);border-radius:1px;overflow:hidden;
+}
+.compbar span{display:block;height:100%;}
+.legend{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));
+  gap:5px 16px;margin-top:11px;
+}
+.legend span{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);}
+.legend i{width:8px;height:8px;border-radius:1px;flex:none;}
+.legend b{color:var(--text);font-weight:500;}
+
+/* ==========================================================================
+   Simulator - a planning table, not a magic box
+   ========================================================================== */
+.sim-warn{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:7px 12px;margin-bottom:12px;
+  border:1px solid var(--amber-line);
+  border-left-width:2px;
+  border-radius:2px;
+  background:var(--amber-soft);
+}
+.sim-warn p{font-size:11px;color:var(--muted);}
+.sim-warn p b{color:var(--text);font-weight:500;}
+
+.sim-rows{border-top:1px solid var(--line);}
+.sim-row{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(120px,1.5fr) 96px 66px;
+  align-items:center;gap:12px;
+  padding:5px 12px;
+  border-bottom:1px solid var(--line);
+}
+.sim-row:hover{background:rgba(255,255,255,.02);}
+.sim-row.locked{opacity:.62;}
+.sim-row .nm{font-size:12px;min-width:0;}
+.sim-row .nm small{display:block;font-size:10px;color:var(--dim);}
+.sim-row .numin{text-align:right;}
+.sim-row .numin input{width:100%;text-align:right;font-variant-numeric:tabular-nums;}
+.sim-row .delta{
+  text-align:right;font-size:11.5px;font-variant-numeric:tabular-nums;color:var(--dim);
+}
+.sim-row .delta.up{color:var(--good);}
+.sim-row .delta.dn{color:var(--bad);}
+
+.tag-lock{
+  display:inline-block;margin-left:6px;
+  font-size:8.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--dim);border:1px solid var(--line-2);border-radius:2px;padding:1px 4px;
+}
+
+.sim-total{
+  display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;
+  padding:8px 12px;
+  background:var(--surface-2);
+  border-bottom:1px solid var(--line);
+  font-size:11.5px;color:var(--muted);
+}
+.sim-total b{color:var(--text);font-weight:600;font-variant-numeric:tabular-nums;}
+
+.sim-alert{
+  margin:10px 12px 0;padding:8px 10px;
+  border-radius:2px;font-size:11.5px;
+  border:1px solid var(--line-2);background:var(--surface-2);color:var(--muted);
+}
+.sim-alert b{color:var(--text);font-weight:600;}
+.sim-alert[role="alert"]{
+  border-color:rgba(188,95,93,.45);background:rgba(188,95,93,.08);color:#E5B4B3;
+}
+.sim-alert[role="alert"] b{color:#F0CDCC;}
+.sim-alert ul{margin:5px 0 0;padding-left:16px;}
+.sim-alert li{margin:2px 0;}
+
+.sim-actions{
+  display:flex;gap:8px;flex-wrap:wrap;align-items:center;
+  padding:11px 12px;border-top:1px solid var(--line);
+}
+.presets{display:flex;gap:7px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--line);}
+
+.sim-delta-row{
+  display:flex;align-items:baseline;justify-content:space-between;gap:14px;
+  padding:11px 12px;border-bottom:1px solid var(--line);
+  background:var(--surface-2);
+}
+.sim-delta-row .k{
+  font-size:9.5px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);
+}
+.sim-delta-row .v{font-size:22px;font-weight:600;letter-spacing:-.02em;}
+.sim-delta-row .v.pos{color:var(--good);}
+.sim-delta-row .v.neg{color:var(--bad);}
+.sim-delta-row .s{font-size:10.5px;color:var(--dim);text-align:right;max-width:52%;}
+
+.mix{padding:11px 12px;border-top:1px solid var(--line);}
+.mix-line + .mix-line{margin-top:9px;}
+.mix-line .cap{
+  display:flex;justify-content:space-between;
+  font-size:10px;color:var(--dim);margin-bottom:4px;
+}
+.stack{display:flex;height:9px;background:var(--surface-3);border-radius:1px;overflow:hidden;}
+.stack span{display:block;height:100%;}
+.chips{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:10px;}
+.chips .chip{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;color:var(--muted);}
+.chips .chip i{width:7px;height:7px;border-radius:1px;}
+
+.chdirect{background:#4E9E7C;}
+.chota1{background:#5B87A8;}
+.chota2{background:#7C8FA6;}
+.chagent{background:#6E7A88;}
+.chcorp{background:#4A5563;}
+.chwalk{background:#3C444F;}
+
+/* ==========================================================================
+   Recommendations - an operations table
+   ========================================================================== */
+table.recs{width:100%;border-collapse:collapse;font-size:12px;}
+table.recs thead th{
+  position:sticky;top:var(--topbar-h);z-index:5;
+  background:var(--surface-2);
+  font-size:9.5px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--muted);text-align:left;
+  padding:7px 10px;border-bottom:1px solid var(--line-2);white-space:nowrap;
+}
+table.recs tbody td{
+  padding:9px 10px;border-bottom:1px solid var(--line);
+  vertical-align:top;
+}
+table.recs tbody tr:nth-child(even){background:rgba(255,255,255,.013);}
+table.recs tbody tr:hover{background:rgba(192,138,46,.06);}
+.rec-prio{width:104px;}
+.prio-tag{
+  display:inline-block;min-width:52px;text-align:center;
+  font-size:9px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+  padding:2px 6px;border-radius:2px;border:1px solid;
+}
+.prio-tag.HIGH{color:var(--bad);border-color:rgba(188,95,93,.5);}
+.prio-tag.MEDIUM{color:var(--amber);border-color:var(--amber-line);}
+.prio-tag.LOW{color:var(--muted);border-color:var(--line-2);}
+.prio-meter{display:block;height:2px;background:var(--surface-4);margin-top:6px;}
+.prio-meter i{display:block;height:100%;background:var(--line-3);}
+.prio-num{display:block;font-size:9.5px;color:var(--dim);margin-top:3px;}
+.rec-ch{width:132px;font-size:11.5px;color:var(--muted);}
+.rec-block .k{
+  font-size:9px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--dim);margin-bottom:2px;
+}
+.rec-block .v{font-size:11.5px;color:var(--muted);}
+.rec-block.evidence .v,.rec-block.action .v{color:var(--text);}
+.rec-block.action .v{font-weight:500;}
+.rec-block + .rec-block{margin-top:6px;}
+.rec-block.assumption .v{color:var(--dim);font-style:italic;}
+
+/* ==========================================================================
+   Bookings
+   ========================================================================== */
+.bk-toolbar{
+  display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;
+  padding:10px 12px;border-bottom:1px solid var(--line);
+  background:var(--surface-2);
+}
+.ctl{display:flex;flex-direction:column;gap:3px;}
+.ctl.grow{flex:1;min-width:150px;}
+.ctl label{
+  font-size:9px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);
+}
+.bk-meta{
+  display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;
+  padding:7px 12px;border-bottom:1px solid var(--line);
+  font-size:11px;color:var(--muted);
+}
+.bk-meta b{color:var(--text);font-weight:600;}
+.pager{display:flex;align-items:center;gap:9px;font-size:11px;}
+
+.empty{padding:30px 16px;text-align:center;color:var(--dim);}
+.empty h4{font-size:12.5px;color:var(--muted);margin-bottom:3px;}
+.empty p{font-size:11.5px;}
+
+/* trend */
+.trend-wrap{padding:12px;}
+.trend-wrap svg{width:100%;height:auto;display:block;}
+.gridline{stroke:var(--line);stroke-width:1;}
+.axis{stroke:var(--line-2);stroke-width:1;}
+.tick{fill:var(--dim);font:400 9.5px var(--sans);}
+.trend-gross{fill:#2C4A63;}
+.trend-net{fill:#3E8C6C;}
+.trend-cost{fill:var(--amber);}
+svg text{font-family:var(--sans);}
+
+/* ==========================================================================
+   Footer - provenance, stated plainly
+   ========================================================================== */
+.foot{
+  margin-top:24px;padding-top:14px;
+  border-top:1px solid var(--line);
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;
+}
+.foot h3{
+  font-size:9.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--dim);margin-bottom:5px;
+}
+.foot p{font-size:11px;color:var(--dim);line-height:1.6;}
+.foot p b{color:var(--muted);font-weight:500;}
+
+/* ==========================================================================
+   Responsive
+   ========================================================================== */
+@media (max-width:1240px){
+  .c-32,.c-23,.c-2{grid-template-columns:minmax(0,1fr);}
+  .c-32>*,.c-23>*,.c-2>*{grid-column:span 12;}
+  .obs{grid-template-columns:minmax(0,1fr);}
+  .obs-fig{border-left:0;border-top:1px solid var(--line);}
+}
+@media (max-width:1080px){
+  .shell{grid-template-columns:180px minmax(0,1fr);}
+  .metric-row{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .metric:nth-child(3){border-left:0;}
+  .metric:nth-child(n+3){border-top:1px solid var(--line);}
+}
+@media (max-width:860px){
+  .shell{grid-template-columns:minmax(0,1fr);}
+  .sidebar{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line);}
+  .sb-nav ul{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));}
+  .sb-nav a{border-left:0;border-bottom:2px solid transparent;padding:6px 14px;}
+  .sb-nav a[aria-current="true"]{border-left:0;border-bottom-color:var(--amber);}
+  .topbar{height:auto;padding:9px 14px;flex-wrap:wrap;gap:10px;}
+  .tb-right{gap:14px;flex-wrap:wrap;}
+  .status{padding-left:0;border-left:0;}
+  .content{padding:0 14px 34px;}
+  .metric-row{grid-template-columns:minmax(0,1fr);}
+  .metric{border-left:0;}
+  .metric + .metric{border-top:1px solid var(--line);}
+  .gnb-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px 10px;}
+  .gnb-row.head{display:none;}
+  .gnb-name{grid-column:1 / -1;}
+  .gnb-arrow{display:none;}
+  .sim-row{grid-template-columns:minmax(0,1fr) 90px 58px;}
+  .sim-row input[type="range"]{grid-column:1 / -1;}
+  table.data thead th{position:static;}
+}
+@media (prefers-reduced-motion:reduce){
+  *{transition:none !important;animation:none !important;}
+}
+</style>
+</head>
+<body>
+
+<a class="skip-link" href="#main">Skip to main content</a>
+
+<div class="shell">
+
+  <!-- ===================================================================
+       Sidebar
+       =================================================================== -->
+  <aside class="sidebar">
+    <div class="sb-brand">
+      <div class="sb-logo"><span class="sb-mark">D6</span> DISTRIBOX</div>
+      <div class="sb-tag">Channel Intelligence</div>
+    </div>
+
+    <nav class="sb-nav" aria-label="Primary">
+      <h2>Analysis</h2>
+      <ul>
+        <li><a href="#overview" data-nav>Overview</a></li>
+        <li><a href="#leakage" data-nav>Money Leakage</a></li>
+        <li><a href="#channels" data-nav>Channel Economics</a></li>
+        <li><a href="#simulator" data-nav>Mix Simulator</a></li>
+        <li><a href="#recommendations" data-nav>Recommendations</a></li>
+        <li><a href="#bookings" data-nav>Bookings</a></li>
+      </ul>
+    </nav>
+
+    <div class="sb-foot">
+      <div class="hotel" id="sb-hotel">&mdash;</div>
+      <div id="sb-period">&mdash;</div>
+      <button type="button" class="status-chip" id="synthetic-badge"
+              aria-expanded="false" aria-controls="synthetic-detail"
+              aria-label="Synthetic demo dataset. Select for provenance.">
+        <span class="dot" aria-hidden="true"></span> Synthetic demo data
+      </button>
+      <div id="synthetic-detail" hidden></div>
+    </div>
+  </aside>
+
+  <!-- ===================================================================
+       Main
+       =================================================================== -->
+  <div class="main">
+
+    <header class="topbar">
+      <div>
+        <h1 id="page-title">Overview</h1>
+        <div class="crumb" id="page-crumb">Gross to net revenue</div>
+      </div>
+      <div class="tb-right">
+        <div class="field">
+          <label for="tb-hotel">Property</label>
+          <span class="val" id="tb-hotel">&mdash;</span>
+        </div>
+        <div class="field">
+          <label for="tb-period">Period</label>
+          <span class="val nowrap" id="tb-period">&mdash;</span>
+        </div>
+        <span class="status" title="Every rupee is read from a PostgreSQL generated column">
+          <span class="dot" aria-hidden="true"></span>
+          <span id="tb-status">Reconciled</span>
+        </span>
+      </div>
+    </header>
+
+    <div class="content" id="main">
+
+      <!-- =============================================================
+           01  OVERVIEW
+           ============================================================= -->
+      <section id="overview" aria-labelledby="h-overview">
+        <div class="sec-head">
+          <div>
+            <div class="sec-label">01 &middot; Overview</div>
+            <h2 id="h-overview">Gross &rarr; Net Revenue</h2>
+            <p id="hero-lede"></p>
+          </div>
+          <div class="sec-aside" id="ov-aside"></div>
+        </div>
+
+        <!-- one cohesive financial summary panel, divided by hairlines -->
+        <div class="metric-panel">
+          <div class="metric-row" id="hero-metrics"></div>
+          <div class="metric-row" id="kpis"></div>
+        </div>
+
+        <!-- primary visual: gross is not net -->
+        <div class="panel" style="margin-top:14px">
+          <div class="panel-hd">
+            <h3>Channel Economics &mdash; gross against net</h3>
+            <span class="lbl lbl-observed">Observed</span>
+          </div>
+          <div class="panel-bd flush" id="gn-bars"></div>
+        </div>
+
+        <div class="panel" style="margin-top:14px">
+          <div class="panel-hd"><h3>Channel observation</h3></div>
+          <div id="headline-insight"></div>
+        </div>
+      </section>
+
+      <!-- =============================================================
+           02  MONEY LEAKAGE
+           ============================================================= -->
+      <section id="leakage" aria-labelledby="h-leakage">
+        <div class="sec-head">
+          <div>
+            <div class="sec-label">02 &middot; Money Leakage</div>
+            <h2 id="h-leakage">Money Leakage</h2>
+            <p>Distribution cost by booking component &mdash; first on one real booking, then across the portfolio.</p>
+          </div>
+        </div>
+
+        <div class="cols c-2">
+          <div class="panel">
+            <div class="panel-hd">
+              <h3>Booking economics &mdash; one booking, two channels</h3>
+              <span class="lbl lbl-observed">Observed</span>
+            </div>
+            <div class="panel-bd" id="waterfall"></div>
+            <div class="panel-bd" style="border-top:1px solid var(--line)" id="leak-takeaway"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-hd">
+              <h3>Distribution cost by component</h3>
+              <span class="dim" style="font-size:10.5px" id="leak-sub"></span>
+            </div>
+            <div class="panel-bd">
+              <div class="compbar" id="leak-compbar" role="img" aria-label="Distribution cost composition"></div>
+              <div class="legend" id="leak-legend"></div>
+              <table class="stmt" style="margin-top:14px">
+                <caption>Distribution cost reconciliation</caption>
+                <tbody>
+                  <tr class="total">
+                    <th scope="row">Total distribution cost</th>
+                    <td class="bad" id="leak-total">&mdash;</td>
+                  </tr>
+                  <tr class="sub">
+                    <th scope="row">Share of gross room revenue</th>
+                    <td id="leak-pct">&mdash;</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- =============================================================
+           03  CHANNEL ECONOMICS
+           ============================================================= -->
+      <section id="channels" aria-labelledby="h-channels">
+        <div class="sec-head">
+          <div>
+            <div class="sec-label">03 &middot; Channel Economics</div>
+            <h2 id="h-channels">Channel Economics</h2>
+            <p>Which channels actually create retained revenue? Every column is arithmetic on stored bookings, read from PostgreSQL generated columns. Sort by any column.</p>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="tbl-wrap">
+            <table id="chan-table" class="data">
+              <caption id="chan-caption"></caption>
+              <thead><tr id="chan-head"></tr></thead>
+              <tbody id="chan-body"></tbody>
+              <tfoot id="chan-foot"></tfoot>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:14px">
+          <div class="panel-hd">
+            <h3>Booking share against net revenue share</h3>
+            <span class="dim" style="font-size:10.5px">Right of the line returns more net revenue than it takes in bookings</span>
+          </div>
+          <div class="panel-bd" id="gaps"></div>
+        </div>
+      </section>
+
+      <!-- =============================================================
+           04  MIX SIMULATOR
+           ============================================================= -->
+      <section id="simulator" aria-labelledby="h-simulator">
+        <div class="sec-head">
+          <div>
+            <div class="sec-label">04 &middot; Mix Simulator</div>
+            <h2 id="h-simulator">Channel Mix Simulator</h2>
+            <p>Model a distribution change before applying it. The same <code>ScenarioEngine</code> arithmetic that produced the portfolio figures recomputes the outcome, live.</p>
+          </div>
+        </div>
+
+        <div class="sim-warn">
+          <span class="lbl lbl-modelled">MODELLED SCENARIO — NOT A GUARANTEE</span>
+          <p>Every figure below is arithmetic on the assumptions listed at the foot of this section. It is not a forecast, and a modelled gain is not a committed saving.</p>
+        </div>
+
+        <div class="cols c-23">
+          <!-- allocation planning table -->
+          <div class="panel">
+            <div class="panel-hd">
+              <h3>Channel allocation</h3>
+              <span class="dim" style="font-size:10.5px">Total cannot exceed observed room nights</span>
+            </div>
+            <div class="presets">
+              <button type="button" class="btn btn-sm" id="preset-current">Reset to current mix</button>
+              <button type="button" class="btn btn-sm" id="preset-engine">Engine recommendation</button>
+              <button type="button" class="btn btn-sm" id="preset-cutota">Shift 25% of OTA volume to direct</button>
+            </div>
+            <div class="sim-rows" id="sim-rows"></div>
+            <div class="sim-total">
+              <span>Allocated <b id="sim-alloc-total">0</b> of <b id="sim-obs-total">0</b> observed room nights</span>
+              <span>Demand at risk <b id="sim-risk">&mdash;</b></span>
+            </div>
+            <div id="sim-alert-slot"></div>
+            <div class="sim-actions">
+              <button type="button" class="btn btn-primary" id="run-scenario">Run Scenario</button>
+              <button type="button" class="btn btn-ghost" id="reset-sim">Reset</button>
+            </div>
+          </div>
+
+          <!-- scenario impact -->
+          <div class="panel">
+            <div class="panel-hd">
+              <h3>Scenario impact</h3>
+              <span class="lbl lbl-modelled">Modelled</span>
+            </div>
+
+            <div id="sim-empty">
+              <div class="empty">
+                <h4>No scenario run</h4>
+                <p>Set an allocation on the left, then run the scenario to model its impact.</p>
+              </div>
+            </div>
+
+            <div id="sim-results" hidden>
+              <div class="sim-delta-row">
+                <div>
+                  <div class="k">Net revenue change</div>
+                  <div class="v" id="sim-delta">&mdash;</div>
+                </div>
+                <div class="s" id="sim-delta-sub"></div>
+              </div>
+
+              <div class="tbl-wrap">
+                <table class="data" id="sim-cmp">
+                  <caption>Current is the observed portfolio total. Scenario is re-modelled at the same observed channel rates.</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Metric</th>
+                      <th scope="col" class="num">Current</th>
+                      <th scope="col" class="num">Scenario</th>
+                      <th scope="col" class="num">Change</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+
+              <div class="mix">
+                <div class="mix-line">
+                  <div class="cap"><span>Current mix</span><span id="cap-cur">&mdash;</span></div>
+                  <div class="stack" id="stack-cur" role="img" aria-label="Current channel mix"></div>
+                </div>
+                <div class="mix-line">
+                  <div class="cap"><span>Scenario mix</span><span id="cap-scn">&mdash;</span></div>
+                  <div class="stack" id="stack-scn" role="img" aria-label="Scenario channel mix"></div>
+                </div>
+                <div class="chips" id="mix-legend"></div>
+              </div>
+
+              <p class="basis-note" id="sim-risk-note" style="margin:0;padding:0 12px 12px;font-size:11px;color:var(--dim)"></p>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:14px" id="assumptions"></div>
+      </section>
+
+      <!-- =============================================================
+           05  RECOMMENDATIONS
+           ============================================================= -->
+      <section id="recommendations" aria-labelledby="h-recs">
+        <div class="sec-head">
+          <div>
+            <div class="sec-label">05 &middot; Recommendations</div>
+            <h2 id="h-recs">Recommendations</h2>
+            <p>Deterministic rules over observed channel data. No language model decides any of this. Each line separates the observation from the action, and states whether its evidence is observed arithmetic or a modelling assumption.</p>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="tbl-wrap" id="recs"></div>
+        </div>
+      </section>
+
+      <!-- =============================================================
+           06  BOOKINGS
+           ============================================================= -->
+      <section id="bookings" aria-labelledby="h-bookings">
+        <div class="sec-head">
+          <div>
+            <div class="sec-label">06 &middot; Booking ledger</div>
+            <h2 id="h-bookings">Bookings</h2>
+            <p>Realised bookings only &mdash; cancelled and no-show stayed generated no revenue. Financial columns are PostgreSQL generated columns, so this ledger cannot disagree with the totals above it.</p>
+          </div>
+        </div>
+
+        <div id="trend-mount"></div>
+
+        <div class="panel" id="bk-ledger">
+          <div class="bk-toolbar">
+            <div class="ctl grow">
+              <label for="bk-q">Search</label>
+              <input type="search" id="bk-q" placeholder="Booking reference" autocomplete="off" />
+            </div>
+            <div class="ctl">
+              <label for="bk-channel">Channel</label>
+              <select id="bk-channel"><option value="">All channels</option></select>
+            </div>
+            <div class="ctl">
+              <label for="bk-from">Check-in from</label>
+              <input type="date" id="bk-from" />
+            </div>
+            <div class="ctl">
+              <label for="bk-to">Check-in to</label>
+              <input type="date" id="bk-to" />
+            </div>
+            <div class="ctl">
+              <label for="bk-sort">Sort</label>
+              <select id="bk-sort">
+                <option value="date_desc">Newest first</option>
+                <option value="date_asc">Oldest first</option>
+                <option value="net_desc">Net revenue, high to low</option>
+                <option value="net_asc">Net revenue, low to high</option>
+                <option value="cost_desc">Distribution cost, high to low</option>
+                <option value="cost_pct_desc">Cost rate, high to low</option>
+                <option value="net_adr_desc">Net ADR, high to low</option>
+                <option value="nights_desc">Room nights, high to low</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="bk-meta">
+            <span id="bk-count">&mdash;</span>
+            <div class="pager">
+              <button type="button" class="btn btn-sm" id="bk-prev">Previous</button>
+              <span id="bk-page" class="nowrap">&mdash;</span>
+              <button type="button" class="btn btn-sm" id="bk-next">Next</button>
+            </div>
+          </div>
+
+          <div class="tbl-wrap">
+            <table class="data" id="bk-table">
+              <thead>
+                <tr>
+                  <th scope="col">Booking</th>
+                  <th scope="col">Check-in</th>
+                  <th scope="col">Channel</th>
+                  <th scope="col" class="num">Room Nights</th>
+                  <th scope="col" class="num">Gross Revenue</th>
+                  <th scope="col" class="num">Distribution Cost</th>
+                  <th scope="col" class="num">Net Revenue</th>
+                  <th scope="col" class="num">Net ADR</th>
+                </tr>
+              </thead>
+              <tbody id="bk-body"></tbody>
+            </table>
+          </div>
+          <div id="bk-empty" hidden></div>
+        </div>
+      </section>
+
+      <footer class="foot">
+        <div>
+          <h3>Provenance</h3>
+          <p>
+            Every rupee originates in <code>bookings.net_room_revenue</code> or
+            <code>bookings.distribution_cost</code>, computed by PostgreSQL from
+            <code>GENERATED ALWAYS AS ... STORED</code> columns over <code>IMMUTABLE</code>
+            functions. This page formats and sorts those values; it does not compute
+            revenue. The Mix Simulator is the one exception and replays
+            <code>ScenarioEngine.evaluate</code> against the same observed rates, an
+            agreement enforced to one paisa by the test suite.
+          </p>
+        </div>
+        <div>
+          <h3>On the words used here</h3>
+          <p>
+            <b>Net revenue is not profit.</b> It is gross room revenue after discount,
+            commission, payment fee and other channel cost. This dataset models no
+            labour, utilities or overhead, so no margin or profit figure is claimed
+            anywhere. Figures labelled <span class="lbl lbl-modelled">Modelled</span>
+            depend on assumptions the hotel supplies and are stated as ceilings or
+            illustrations &mdash; never as guaranteed savings.
+          </p>
+        </div>
+        <div>
+          <h3>Basis</h3>
+          <p id="foot-basis"></p>
+        </div>
+      </footer>
+
+    </div><!-- /content -->
+  </div><!-- /main -->
+</div><!-- /shell -->
+
+<script id="d6-data" type="application/json">__D6_DATA__</script>
+<script>
+"use strict";
+/* =====================================================================
+   D6 DISTRIBOX console renderer.
+
+   Sections, in the order a revenue manager meets them:
+     01 Overview      the four headline figures, then gross against net
+     02 Money Leakage one booking reconciled, then the portfolio total
+     03 Channels      the metrics, sortable; booking share against net share
+     04 Simulator     live ScenarioEngine replay, refusals included
+     05 Recs          observation / action / basis, as an operations table
+     06 Bookings      the ledger behind every total
+
+   Money arrives as strings so nothing is rounded before it is displayed.
+   Rates are rounded the way Python rounds them - half-up at 4dp - so the
+   simulator reproduces ScenarioEngine.evaluate.
+   ===================================================================== */
+
+const RAW = JSON.parse(document.getElementById("d6-data").textContent);
+const $ = (id) => document.getElementById(id);
+const CH = RAW.portfolio.channels;
+const T = RAW.portfolio.totals;
+const SIM = RAW.simulator;
+
+/* ---------------------------------------------------------------------
+   Formatting
+   --------------------------------------------------------------------- */
+function inr(v, dp) {
+  const n = Number(v);
+  const d = dp === undefined ? 2 : dp;
+  const neg = n < 0;
+  const parts = Math.abs(n).toFixed(d).split(".");
+  const whole = parts[0], frac = parts[1];
+  const last3 = whole.slice(-3);
+  let rest = whole.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ",");
+  const body = (rest ? rest + "," : "") + last3 + (frac ? "." + frac : "");
+  return (neg ? "-₹" : "₹") + body;
+}
+function inrCr(v) {
+  const n = Number(v), a = Math.abs(n);
+  const s = n < 0 ? "-₹" : "₹";
+  if (a >= 1e7) return s + (a / 1e7).toFixed(2) + " Cr";
+  if (a >= 1e5) return s + (a / 1e5).toFixed(2) + " L";
+  if (a >= 1e3) return s + (a / 1e3).toFixed(1) + " K";
+  return inr(n);
+}
+function pct(v, dp) { return (Number(v) * 100).toFixed(dp === undefined ? 2 : dp) + "%"; }
+function pctSigned(v, dp) {
+  const n = Number(v) * 100;
+  return (n > 0 ? "+" : n < 0 ? "−" : "") + Math.abs(n).toFixed(dp === undefined ? 2 : dp) + " pp";
+}
+function num(v) { return Number(v).toLocaleString("en-IN"); }
+function nights(v) { return num(Math.round(Number(v))); }
+function esc(s) {
+  return String(s === null || s === undefined ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+function titleCase(s) {
+  return String(s || "").toLowerCase().replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function fmtDate(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ""));
+  if (!m) return String(iso || "");
+  return m[3] + " " + MONTHS[Number(m[2]) - 1] + " " + m[1];
+}
+
+/* Python-compatible rounding: ROUND_HALF_UP, away from zero on a tie. */
+function q2(x) { const s = x < 0 ? -1 : 1; return s * Math.round(Math.abs(x) * 100) / 100; }
+function q4(x) { const s = x < 0 ? -1 : 1; return s * Math.round(Math.abs(x) * 10000) / 10000; }
+
+/* ---------------------------------------------------------------------
+   Channel identity / colour
+   --------------------------------------------------------------------- */
+const CH_ORDER = ["DIRECT", "OTA_ALPHA", "OTA_BETA", "TRAVEL_AGENT", "CORPORATE", "WALK_IN"];
+const CH_META = {};
+CH.forEach((c) => {
+  CH_META[c.channel_code] = { name: c.channel_name, type: c.channel_type, direct: !!c.is_direct };
+});
+function chName(code) { return (CH_META[code] && CH_META[code].name) || code; }
+function chClass(code) {
+  return {
+    DIRECT: "chdirect", OTA_ALPHA: "chota1", OTA_BETA: "chota2",
+    TRAVEL_AGENT: "chagent", CORPORATE: "chcorp", WALK_IN: "chwalk",
+  }[code] || "chwalk";
+}
+const CODES = CH_ORDER.filter((c) => CH_META[c]);
+
+/* ---------------------------------------------------------------------
+   The metrics, one place
+   --------------------------------------------------------------------- */
+const CHANNEL_COLUMNS = [
+  { key: "booking_count",      label: "Bookings",            fmt: num,              sort: "b" },
+  { key: "room_nights",        label: "Room Nights",         fmt: nights,           sort: "n" },
+  { key: "gross_revenue",      label: "Gross Revenue",       fmt: (v) => inrCr(v),   sort: "g" },
+  { key: "distribution_cost",  label: "Distribution Cost",   fmt: (v) => inrCr(v),   sort: "dc", cls: "neg" },
+  { key: "net_revenue",        label: "Net Revenue",         fmt: (v) => inrCr(v),   sort: "nr" },
+  { key: "net_adr",            label: "Net ADR",             fmt: (v) => inr(v, 0),  sort: "na" },
+  { key: "repeat_rate",        label: "Repeat Rate",         fmt: (v) => pct(v),     sort: "rr" },
+  { key: "net_adr_penalty",    label: "ADR Penalty / Night", fmt: (v) => inr(v, 0),  sort: "ap", cls: "neg" },
+  { key: "booking_share",      label: "Booking Share",       fmt: (v) => pct(v),     sort: "bs" },
+  { key: "net_revenue_share",  label: "Net Rev Share",       fmt: (v) => pct(v),     sort: "ns" },
+];
+
+function repeatRate(code) {
+  const r = RAW.repeat_rate && RAW.repeat_rate[code];
+  return r ? Number(r.repeat_rate) : null;
+}
+
+/* =====================================================================
+   01  Overview
+   ===================================================================== */
+function renderOverview() {
+  const gross = T.gross_revenue, cost = T.distribution_cost, net = T.net_revenue;
+
+  $("hero-lede").innerHTML =
+    "Gross booking value overstates what a hotel retains. Across <b>" +
+    num(T.bookings) + "</b> realised bookings and <b>" + nights(T.room_nights) +
+    "</b> room nights, <b>" + inr(cost) + "</b> of distribution cost sat between the two.";
+
+  $("ov-aside").innerHTML =
+    CODES.length + " channels &middot; " + num(RAW.hotel.total_rooms) + " rooms<br>" +
+    fmtDate(RAW.hotel.period_start) + " &ndash; " + fmtDate(RAW.hotel.period_end);
+
+  const metrics = [
+    { cls: "", t: "Gross revenue", v: inrCr(gross),
+      n: "Reported booking value", id: "m-gross" },
+    { cls: "bad", t: "Distribution cost", v: inrCr(cost),
+      n: "Discount, commission, fees", id: "m-cost" },
+    { cls: "good", t: "Net revenue", v: inrCr(net),
+      n: "Retained by the hotel", id: "m-net" },
+    { cls: "bad", t: "Cost rate", v: pct(T.distribution_cost_pct),
+      n: "Share of gross revenue", id: "m-rate" },
+  ];
+  $("hero-metrics").innerHTML = metrics.map((m) =>
+    '<div class="metric primary ' + m.cls + '" id="' + m.id + '-cell">' +
+      '<div class="t">' + esc(m.t) + "</div>" +
+      '<div class="v" id="' + m.id + '">' + m.v + "</div>" +
+      '<div class="n">' + esc(m.n) + "</div>" +
+    "</div>").join("");
+
+  /* the one thing a revenue manager should leave this screen knowing */
+  const leaky = CH.filter((c) => !c.is_direct)
+    .map((c) => ({ c: c, gap: Number(c.booking_share) - Number(c.net_revenue_share) }))
+    .sort((a, b) => b.gap - a.gap);
+  const top = leaky[0];
+  const bestADR = CH.slice().sort((a, b) => Number(b.net_adr) - Number(a.net_adr))[0];
+  const direct = CH.find((c) => c.is_direct);
+
+  $("headline-insight").innerHTML =
+    '<div class="obs">' +
+      '<div class="obs-main">' +
+        "<h3>" + esc(top.c.channel_name) + " is the portfolio's highest-volume " +
+          "non-direct channel, and it does not return value in proportion.</h3>" +
+        "<p>It takes <b>" + pct(top.c.booking_share) + "</b> of bookings and returns " +
+          "<b>" + pct(top.c.net_revenue_share) + "</b> of net revenue &mdash; a gap of " +
+          "<b>" + pctSigned(top.gap) + "</b>. Distribution cost consumed " +
+          "<b>" + pct(top.c.distribution_cost_pct) + "</b> of its gross revenue, and " +
+          "distribution cost across the portfolio was <b>" +
+          pct(T.distribution_cost_pct) + "</b> of gross. The best net ADR in the " +
+          "portfolio is <b>" + esc(bestADR.channel_name) + "</b> at <b>" +
+          inr(bestADR.net_adr, 0) + "</b> per night" +
+          (direct && !direct.is_direct ? "" : ", against " + inr(direct.net_adr, 0) +
+            " for " + esc(direct.channel_name)) + ".</p>" +
+      "</div>" +
+      '<div class="obs-fig">' +
+        "<dl>" +
+          "<dt>Booking share</dt><dd>" + pct(top.c.booking_share) + "</dd>" +
+          "<dt>Net revenue share</dt><dd>" + pct(top.c.net_revenue_share) + "</dd>" +
+          "<dt>Gap</dt><dd class=\"bad\">" + pctSigned(top.gap) + "</dd>" +
+          "<dt>Distribution cost</dt><dd class=\"bad\">" + inrCr(top.c.distribution_cost) + "</dd>" +
+          "<dt>Net ADR</dt><dd>" + inr(top.c.net_adr, 0) + "</dd>" +
+          "<dt>Repeat rate</dt><dd>" +
+            (repeatRate(top.c.channel_code) === null ? "—" : pct(repeatRate(top.c.channel_code))) + "</dd>" +
+        "</dl>" +
+      "</div>" +
+    "</div>";
+}
+
+/* =====================================================================
+   02  Money leakage - a reconciliation, not an illustration
+   ===================================================================== */
+function renderLeakage() {
+  const ota = RAW.spec_case.ota_booking;
+  const direct = RAW.spec_case.direct_booking;
+
+  $("leak-sub").textContent =
+    fmtDate(RAW.hotel.period_start) + " – " + fmtDate(RAW.hotel.period_end);
+
+  const line = (label, sub, otaV, dirV, cls) =>
+    "<tr" + (cls ? ' class="' + cls + '"' : "") + ">" +
+      "<th scope=\"row\">" + label + (sub ? "<small>" + sub + "</small>" : "") + "</th>" +
+      "<td" + (otaV === 0 ? ' class="dim"' : "") + ">" + (otaV === 0 ? "—" : inr(otaV)) + "</td>" +
+      "<td" + (dirV === 0 ? ' class="dim"' : "") + ">" + (dirV === 0 ? "—" : inr(dirV)) + "</td>" +
+    "</tr>";
+
+  $("waterfall").innerHTML =
+    '<table class="stmt">' +
+      "<caption>Booking economics &mdash; gross " + inr(ota.gross_room_revenue) +
+        " booked two ways</caption>" +
+      "<thead><tr><th scope=\"col\">Component</th>" +
+        "<th scope=\"col\">Through an OTA</th><th scope=\"col\">Booked direct</th></tr></thead>" +
+      "<tbody>" +
+        line("Gross room revenue", null, Number(ota.gross_room_revenue), Number(direct.gross_room_revenue)) +
+        line("Less: Discount", "promotional / negotiated", Number(ota.discount_amount), Number(direct.discount_amount)) +
+        line("Less: Commission", "OTA / agent commission", Number(ota.commission_amount), Number(direct.commission_amount)) +
+        line("Less: Payment fee", "gateway and processing", Number(ota.payment_fee), Number(direct.payment_fee)) +
+        line("Less: Other channel cost", null, Number(ota.other_channel_cost), Number(direct.other_channel_cost)) +
+        '<tr class="total">' +
+          "<th scope=\"row\">Net revenue retained<small>what the hotel actually keeps</small></th>" +
+          "<td>" + inr(ota.net_room_revenue) + "</td>" +
+          "<td>" + inr(direct.net_room_revenue) + "</td>" +
+        "</tr>" +
+        '<tr class="sub">' +
+          "<th scope=\"row\">Distribution cost</th>" +
+          "<td>" + inr(ota.distribution_cost) + "</td>" +
+          "<td>" + inr(direct.distribution_cost) + "</td>" +
+        "</tr>" +
+        '<tr class="sub">' +
+          "<th scope=\"row\">Distribution cost rate</th>" +
+          "<td>" + pct(ota.distribution_cost_pct) + "</td>" +
+          "<td>" + pct(direct.distribution_cost_pct) + "</td>" +
+        "</tr>" +
+      "</tbody>" +
+    "</table>";
+
+  $("leak-takeaway").innerHTML =
+    "Identical gross value of <strong>" + inr(ota.gross_room_revenue) +
+    "</strong> retains <strong>" + inr(ota.net_room_revenue) +
+    "</strong> through an OTA and <strong>" + inr(direct.net_room_revenue) +
+    "</strong> booked direct &mdash; a difference of <strong>" +
+    inr(Number(ota.gross_room_revenue) - Number(ota.net_room_revenue)) +
+    "</strong>. The OTA booking gives up <strong>" + pct(ota.distribution_cost_pct) +
+    "</strong> of its gross value to distribution cost.";
+
+  /* portfolio-wide composition */
+  const sum = (f) => CH.reduce((a, c) => a + Number(c[f]), 0);
+  const parts = [
+    { k: "discount_amount",    label: "Discounts",           color: "#C08A2E" },
+    { k: "commission_amount",  label: "Commission",          color: "#BC5F5D" },
+    { k: "payment_fee",        label: "Payment fees",        color: "#5B87A8" },
+    { k: "other_channel_cost", label: "Other channel costs", color: "#6E7A88" },
+  ].map((p) => ({ label: p.label, color: p.color, v: sum(p.k) }));
+  const total = parts.reduce((a, p) => a + p.v, 0);
+
+  $("leak-compbar").innerHTML = parts.map((p) =>
+    p.v > 0 ? '<span title="' + esc(p.label) + " " + inr(p.v) +
+      '" style="width:' + (p.v / total * 100).toFixed(3) + "%;background:" + p.color + '"></span>' : ""
+  ).join("");
+
+  $("leak-legend").innerHTML = parts.filter((p) => p.v > 0).map((p) =>
+    '<span><i style="background:' + p.color + '"></i>' + esc(p.label) +
+    " <b>" + pct(p.v / total) + "</b> &middot; " + inrCr(p.v) + "</span>"
+  ).join("");
+
+  $("leak-total").textContent = inr(total);
+  $("leak-pct").textContent = pct(T.distribution_cost_pct);
+}
+
+/* =====================================================================
+   03  Channel economics
+   ===================================================================== */
+let chanSort = { key: "net_revenue", dir: "desc" };
+
+function chanSorted() {
+  const col = CHANNEL_COLUMNS.find((c) => c.key === chanSort.key) || CHANNEL_COLUMNS[4];
+  const get = (c) => {
+    if (col.key === "repeat_rate") {
+      const v = repeatRate(c.channel_code);
+      return v === null ? -1 : v;
+    }
+    return Number(c[col.key]);
+  };
+  const dir = chanSort.dir === "asc" ? 1 : -1;
+  return CH.slice().sort((a, b) => {
+    const d = (get(a) - get(b)) * dir;
+    return d !== 0 ? d : a.channel_name.localeCompare(b.channel_name);
+  });
+}
+
+function renderChannelTable() {
+  const head = CHANNEL_COLUMNS.map((col) => {
+    const active = chanSort.key === col.key;
+    const aria = active ? (chanSort.dir === "asc" ? "ascending" : "descending") : "none";
+    const mark = active ? (chanSort.dir === "asc" ? "▲" : "▼") : "↕";
+    return '<th scope="col" class="sortable' + (col.cls === "neg" ? " num" : "") +
+      '" aria-sort="' + aria + '" data-key="' + col.key + '">' +
+      '<button type="button" class="th-in" data-sort="' + col.key + '">' +
+      esc(col.label) + ' <span class="sortmark" aria-hidden="true">' + mark + "</span></button></th>";
+  }).join("");
+  $("chan-head").innerHTML = head;
+
+  const rows = chanSorted();
+  const maxGross = Math.max.apply(null, CH.map((c) => Number(c.gross_revenue)));
+  const maxPct = Math.max.apply(null, CH.map((c) => Number(c.distribution_cost_pct)).concat([0.01]));
+
+  $("chan-body").innerHTML = rows.map((c) => {
+    const rr = repeatRate(c.channel_code);
+    const gap = Number(c.booking_share) - Number(c.net_revenue_share);
+    const leaky = !c.is_direct && gap > 0.005;
+    return "<tr>" +
+      '<th scope="row"><div class="chname"><b>' + esc(c.channel_name) +
+        (c.is_direct ? ' <span class="lbl lbl-direct">Direct</span>'
+                    : leaky ? ' <span class="lbl lbl-leak">Leak</span>' : "") +
+      "</b><span>" + esc(c.channel_type) + "</span></div></th>" +
+      '<td class="num">' + num(c.booking_count) + "</td>" +
+      '<td class="num">' + nights(c.room_nights) + "</td>" +
+      '<td class="num">' + inrCr(c.gross_revenue) +
+        '<span class="bar"><i style="width:' + (Number(c.gross_revenue) / maxGross * 100).toFixed(1) +
+        "%;background:#3E6C93\"></i></span></td>" +
+      '<td class="num neg">' + inrCr(c.distribution_cost) +
+        '<span class="bar"><i style="width:' + (Number(c.distribution_cost_pct) / maxPct * 100).toFixed(1) +
+        "%;background:#BC5F5D\"></i></span></td>" +
+      '<td class="num">' + inrCr(c.net_revenue) + "</td>" +
+      '<td class="num">' + inr(c.net_adr, 0) + "</td>" +
+      '<td class="num">' + (rr === null ? "&mdash;" : pct(rr)) + "</td>" +
+      '<td class="num neg">' + inr(c.net_adr_penalty, 0) + "</td>" +
+      '<td class="num">' + pct(c.booking_share) + "</td>" +
+      '<td class="num">' + pct(c.net_revenue_share) +
+        '<span class="cellsub" style="color:' + (gap > 0.005 ? "var(--bad)" : "var(--good)") + '">' +
+        pctSigned(gap) + "</span></td>" +
+      "</tr>";
+  }).join("");
+
+  $("chan-foot").innerHTML =
+    '<th scope="row">Portfolio</th>' +
+    '<td class="num">' + num(T.bookings) + "</td>" +
+    '<td class="num">' + nights(T.room_nights) + "</td>" +
+    '<td class="num">' + inrCr(T.gross_revenue) + "</td>" +
+    '<td class="num neg">' + inrCr(T.distribution_cost) + "</td>" +
+    '<td class="num">' + inrCr(T.net_revenue) + "</td>" +
+    '<td class="num">' + inr(T.net_adr, 0) + "</td>" +
+    "<td></td>" +
+    '<td class="num neg">' + inr(T.gross_adr - T.net_adr, 0) + "</td>" +
+    '<td class="num">100.00%</td>' +
+    '<td class="num">100.00%</td>';
+
+  $("chan-caption").textContent =
+    CODES.length + " channels · " + num(T.bookings) + " bookings · " +
+    nights(T.room_nights) + " room nights · " +
+    fmtDate(RAW.hotel.period_start) + " to " + fmtDate(RAW.hotel.period_end) +
+    " · all figures from PostgreSQL generated columns";
+}
+
+function renderGaps() {
+  const rows = CH.filter((c) => !c.is_direct)
+    .map((c) => ({ c: c, gap: Number(c.booking_share) - Number(c.net_revenue_share) }))
+    .sort((a, b) => b.gap - a.gap);
+  const max = Math.max.apply(null, rows.map((r) => Math.abs(r.gap)).concat([0.02]));
+  $("gaps").innerHTML =
+    '<div class="gnb-row head"><span>Channel</span><span></span><span class="num">Gap</span>' +
+      "<span></span></div>" +
+    rows.map((r) => {
+      const pos = r.gap >= 0;
+      const color = pos ? "var(--bad)" : "var(--good)";
+      const w = Math.abs(r.gap) / max * 50;
+      return '<div class="gnb-row">' +
+        '<div class="gnb-name">' + esc(r.c.channel_name) + "</div>" +
+        '<div class="gnb-track" style="position:relative;background:transparent;height:14px">' +
+          '<div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--line-2)"></div>' +
+          '<div style="position:absolute;top:3px;height:8px;background:' + color + ";width:" +
+            w.toFixed(2) + "%;" + (pos ? "left:50%" : "right:50%") + '"></div></div>' +
+        '<div class="gnb-val" style="color:' + color + '">' + pctSigned(r.gap) + "</div>" +
+        '<div class="gnb-arrow"></div>' +
+        "<div></div><div></div><div></div>" +
+      "</div>";
+    }).join("");
+}
+
+/* Gross against net, paired, so the gap between them is the whole point. */
+function renderGrossNetBars() {
+  const rows = CH.slice().sort((a, b) => Number(b.gross_revenue) - Number(a.gross_revenue));
+  const max = Math.max.apply(null, rows.map((c) => Number(c.gross_revenue)));
+
+  $("gn-bars").innerHTML =
+    '<div class="gnb-row head"><span>Channel</span><span>Gross revenue</span>' +
+      '<span class="num"></span><span></span><span>Net revenue</span>' +
+      '<span class="num"></span><span class="num">Retained</span></div>' +
+    rows.map((c) => {
+      const g = Number(c.gross_revenue), n = Number(c.net_revenue);
+      const keep = g ? n / g : 0;
+      return '<div class="gnb-row">' +
+        '<div class="gnb-name">' + esc(c.channel_name) + "</div>" +
+        '<div class="gnb-track"><i style="width:' + (g / max * 100).toFixed(2) +
+          "%;background:#3E6C93\"></i></div>" +
+        '<div class="gnb-val">' + inrCr(g) + "</div>" +
+        '<div class="gnb-arrow">&rarr;</div>' +
+        '<div class="gnb-track"><i style="width:' + (n / max * 100).toFixed(2) +
+          "%;background:#4E9E7C\"></i></div>" +
+        '<div class="gnb-val">' + inrCr(n) + "</div>" +
+        '<div class="gnb-keep' + (keep < 0.9 ? " bad" : "") + '">' + pct(keep) + "</div>" +
+      "</div>";
+    }).join("");
+}
+
+/* The secondary metric band, inside the same summary panel as the headline
+   four. Deliberately not a grid of cards. */
+function renderKpis() {
+  const direct = CH.find((c) => c.is_direct);
+  const drr = repeatRate("DIRECT");
+  const m = [
+    { t: "Bookings", v: num(T.bookings), n: "realised, " + nights(T.bookings) + " refs" },
+    { t: "Room nights", v: nights(T.room_nights), n: "sold room nights" },
+    { t: "Gross ADR", v: inr(T.gross_adr, 0), n: "gross per night" },
+    { t: "Net ADR", v: inr(T.net_adr, 0), n: "net per night", cls: "good" },
+    { t: "Occupancy", v: pct(T.occupancy), n: nights(T.room_nights) + " of " + num(days() * RAW.hotel.total_rooms) + " available" },
+    { t: "Net RevPAR", v: inr(T.net_revpar, 0), n: "net per available night", cls: "good" },
+    { t: "ADR penalty", v: inr(T.gross_adr - T.net_adr, 0), n: "gross less net, per night", cls: "bad" },
+    { t: "Direct share", v: pct(T.direct_booking_share), n: direct ? nights(direct.room_nights) + " nights booked direct" : "" },
+    { t: "Direct net revenue share", v: pct(T.direct_net_revenue_share), n: "direct's share of net room revenue", cls: "good" },
+    { t: "Direct repeat rate", v: drr === null ? "—" : pct(drr), n: "returning guests, direct" },
+  ];
+  $("kpis").innerHTML = m.map((x) =>
+    '<div class="metric ' + (x.cls || "") + '">' +
+      '<div class="t">' + esc(x.t) + "</div>" +
+      '<div class="v">' + x.v + "</div>" +
+      '<div class="n">' + esc(x.n) + "</div>" +
+    "</div>").join("");
+}
+
+function days() {
+  const a = new Date(RAW.hotel.period_start), b = new Date(RAW.hotel.period_end);
+  return Math.round((b - a) / 86400000) + 1;
+}
+
+/* =====================================================================
+   04  Channel Mix Simulator
+   ===================================================================== */
+const RATES = SIM.rates;
+const OBS_TOTAL = Number(T.room_nights);
+const BASELINE_ALLOC = SIM.current.allocation;
+let simAlloc = Object.assign({}, BASELINE_ALLOC);
+let simRaw = {};
+let simRan = false;
+
+function simReset() {
+  simAlloc = Object.assign({}, BASELINE_ALLOC);
+  simRaw = {};
+  simRan = false;
+}
+
+/* evaluate(): a faithful replay of ScenarioEngine.evaluate.
+   Mirrors the Python order of operations and quantisation exactly:
+     gross = q2(adr * nights)
+     cost  = q2(adr*nights*(d+m+f+o) + fixed*nights)
+     net   = q2(gross - cost)
+   Totals, direct share, demand at risk and the delta against the observed
+   baseline all follow the same definitions as the Python engine.
+   Backed by tests/test_simulator_parity.py. */
+function evaluate(allocation) {
+  const known = CODES.slice();
+  const empty = {
+    lines: [], roomNights: 0, gross: 0, cost: 0, net: 0, netAdr: 0, costPct: 0,
+    directNights: 0, directShare: 0, gainedDirect: 0, lost: 0,
+    baselineNet: Number(T.net_revenue), delta: 0, feasible: false, problems: [],
+  };
+
+  if (allocation === null || typeof allocation !== "object" || Array.isArray(allocation)) {
+    return Object.assign({}, empty, { problems: ["Allocation is missing or malformed."] });
+  }
+
+  const unknown = Object.keys(allocation).filter((c) => known.indexOf(c) === -1);
+
+  /* NaN / Infinity / a null or boolean where a number belongs: inputs the
+     engine cannot even be handed, so there is nothing to compute. */
+  let malformed = null;
+  for (let i = 0; i < known.length; i++) {
+    const code = known[i];
+    const raw = allocation[code] === undefined ? 0 : allocation[code];
+    if (raw === null || typeof raw === "boolean" ||
+        (typeof raw === "string" && raw.trim() === "")) {
+      malformed = code + ": room nights must be a number, got " + JSON.stringify(raw);
+      break;
+    }
+    const v = Number(raw);
+    if (!isFinite(v)) {
+      malformed = code + ": room nights must be a finite number (" + JSON.stringify(raw) + ")";
+      break;
+    }
+  }
+  if (malformed) return Object.assign({}, empty, { problems: [malformed] });
+
+  let rawTotal = 0;
+  known.forEach((code) => { rawTotal += Number(allocation[code] === undefined ? 0 : allocation[code]); });
+
+  /* if / elif / else, exactly like the engine: an unknown key means the total
+     and per-channel checks are not reached at all, yet the totals are still
+     computed from the known channels. */
+  let reason = null;
+  if (unknown.length) {
+    reason = "unknown channel(s) in allocation: " + unknown.join(", ") +
+      ". DISTRIBOX will not model a channel that does not exist.";
+  } else if (rawTotal > OBS_TOTAL) {
+    reason = "allocation of " + q4(rawTotal) + " room nights exceeds the " +
+      OBS_TOTAL + " observed - impossible";
+  } else {
+    for (let i = 0; i < known.length; i++) {
+      const code = known[i];
+      const v = Number(allocation[code] === undefined ? 0 : allocation[code]);
+      if (v < 0) {
+        reason = code + ": room nights cannot be negative (" + v + ")";
+        break;
+      }
+      /* A non-addressable channel cannot be reallocated. WALK_IN is the
+         canonical case: nobody decides to send a guest to the front desk, so a
+         moved slider would be inventing a booking decision. */
+      const r = RATES[code];
+      if (r.is_addressable === false) {
+        const base = Number(BASELINE_ALLOC[code] || 0);
+        if (q4(v) !== q4(base)) {
+          reason = code + " is non-addressable and cannot be reallocated: " +
+            q4(base) + " observed room nights cannot be modelled as " + q4(v) +
+            ". Nobody chooses to send a guest there, so any movement is an " +
+            "assumption the booking history cannot support.";
+          break;
+        }
+      }
+    }
+  }
+
+  const lines = [];
+  let totalNights = 0, totalGross = 0, totalCost = 0, directNights = 0;
+
+  known.slice().sort().forEach((code) => {
+    const r = RATES[code];
+    const n = Number(allocation[code] === undefined ? 0 : allocation[code]);
+    const base = Number(BASELINE_ALLOC[code] || 0);
+    const adr = Number(r.gross_adr);
+    const rawGross = adr * n;
+    const gross = n >= 0 ? q2(rawGross) : 0;
+    const cost = n >= 0 ? q2(
+      rawGross * Number(r.discount_rate)
+      + rawGross * Number(r.commission_rate)
+      + rawGross * Number(r.payment_fee_rate)
+      + Number(r.fixed_payment_fee) * n
+      + rawGross * Number(r.other_cost_rate)
+    ) : 0;
+    const net = q2(gross - cost);
+    lines.push({
+      code: code, name: chName(code), direct: !!r.is_direct,
+      baseline: base, nights: q4(n), shift: q4(n - base),
+      gross: gross, cost: cost, net: net, adr: adr,
+    });
+    totalNights += q4(n);
+    totalGross += gross;
+    totalCost += cost;
+    if (r.is_direct) directNights += q4(n);
+  });
+
+  totalNights = q4(totalNights);
+  directNights = q4(directNights);
+  totalGross = q2(totalGross);
+  totalCost = q2(totalCost);
+  const totalNet = q2(totalGross - totalCost);
+
+  const baseDirect = q4(known.filter((c) => RATES[c].is_direct)
+    .reduce((a, c) => a + Number(BASELINE_ALLOC[c] || 0), 0));
+
+  let lost = q4(OBS_TOTAL - totalNights);
+  if (lost < 0) {
+    lost = 0;
+    reason = "allocation of " + totalNights + " room nights exceeds the " +
+      OBS_TOTAL + " observed - volume was invented, which no booking " +
+      "history can support";
+  }
+
+  return {
+    lines: lines,
+    roomNights: totalNights,
+    gross: totalGross,
+    cost: totalCost,
+    net: totalNet,
+    netAdr: totalNights ? q4(totalNet / totalNights) : 0,
+    costPct: totalGross ? q4(totalCost / totalGross) : 0,
+    directNights: directNights,
+    directShare: totalNights ? q4(directNights / totalNights) : 0,
+    gainedDirect: q4(directNights - baseDirect),
+    lost: lost,
+    /* ScenarioEngine sets baseline_net_revenue = portfolio.total_net_revenue,
+       i.e. the OBSERVED audited total, and reports
+       net_revenue_delta = total_net - baseline_net. It never measures a
+       scenario against a re-evaluation of itself. */
+    baselineNet: Number(T.net_revenue),
+    delta: q2(totalNet - Number(T.net_revenue)),
+    feasible: reason === null,
+    problems: reason === null ? [] : [reason],
+  };
+}
+
+function renderSimControls() {
+  const obs = OBS_TOTAL;
+  $("sim-rows").innerHTML = CODES.map((code) => {
+    const base = Number(BASELINE_ALLOC[code] || 0);
+    const v = Number(simAlloc[code] || 0);
+    const d = q4(v - base);
+    const cls = Math.abs(d) < 0.5 ? "z" : d > 0 ? "up" : "dn";
+    const r = RATES[code];
+
+    /* A non-addressable channel is locked in the UI for the same reason the
+       engine refuses to move it: there is no booking decision that sends a
+       guest to the front desk, so an editable control would only invite the
+       user to invent one. */
+    const locked = r.is_addressable === false;
+    const raw = simRaw[code];
+    const bad = typeof v !== "number" || !isFinite(v);
+    const shown = raw !== undefined ? raw : (bad ? String(base) : String(v));
+
+    /* step="0.01", not step="1": a range input sanitises its value to the
+       nearest step, so an integer step would silently round the engine's own
+       fractional allocation (10,372.23 nights) and the UI would display a
+       different scenario from the one being computed. */
+    const step = "0.01";
+    const disabled = locked ? " disabled" : "";
+
+    return '<div class="sim-row' + (locked ? " locked" : "") + '" data-code="' + code + '">' +
+      '<div class="nm">' + esc(chName(code)) +
+        (locked ? ' <span class="tag-lock">non-addressable</span>' : "") +
+        "<small>net " + inr(Number(r.gross_adr) -
+          Number(r.gross_adr) * (Number(r.discount_rate) + Number(r.commission_rate) +
+          Number(r.payment_fee_rate) + Number(r.other_cost_rate)), 0) + "/night</small></div>" +
+      '<input type="range" min="0" max="' + obs + '" step="' + step + '" value="' +
+        (bad ? base : v) + '" data-slider="' + code + '"' + disabled +
+        ' aria-label="' + esc(chName(code)) + ' room nights, currently ' +
+        (bad ? "invalid" : nights(v)) + '" />' +
+      '<div class="numin"><input type="number" min="0" step="' + step + '" value="' + shown +
+        '" data-number="' + code + '"' + disabled +
+        ' aria-label="' + esc(chName(code)) + ' room nights" /></div>' +
+      '<div class="delta ' + cls + '">' + (bad ? "invalid"
+        : Math.abs(d) < 0.5 ? "&mdash;"
+        : (d > 0 ? "+" : "−") + nights(Math.abs(d))) + "</div>" +
+    "</div>";
+  }).join("");
+
+  const scn = evaluate(simAlloc);
+  const total = CODES.reduce((a, c) => a + Number(simAlloc[c] || 0), 0);
+  $("sim-alloc-total").textContent = nights(total);
+  $("sim-obs-total").textContent = nights(OBS_TOTAL);
+  $("sim-risk").textContent = !scn.feasible
+    ? "invalid"
+    : (scn.lost > 0 ? nights(scn.lost) + " nights" : "0 nights");
+  $("run-scenario").disabled = !scn.feasible;
+  $("run-scenario").setAttribute("aria-disabled", String(!scn.feasible));
+}
+
+function renderSimAlert() {
+  const slot = $("sim-alert-slot");
+  const scn = evaluate(simAlloc);
+
+  /* An unmodellable allocation gets a hard refusal, not a warning banner the
+     user can scroll past. */
+  if (!scn.feasible) {
+    slot.innerHTML = '<div class="sim-alert" role="alert">' +
+      "<strong>This scenario will not be modelled.</strong><ul>" +
+      scn.problems.map((p) => "<li>" + esc(p) + "</li>").join("") +
+      "</ul>Run Scenario is disabled until the allocation is valid.</div>";
+    return;
+  }
+
+  if (scn.lost > 0.5) {
+    slot.innerHTML = '<div class="sim-alert">' +
+      "Withdrawing <strong>" + nights(scn.lost) + "</strong> room nights from the mix. " +
+      "Unless those nights are recovered elsewhere, they are lost demand, not saved revenue.</div>";
+  } else {
+    slot.innerHTML = '<div class="sim-alert">' +
+      "All " + nights(OBS_TOTAL) + " observed room nights are allocated. " +
+      "This scenario moves volume between channels without losing any.</div>";
+  }
+}
+
+function renderStack(target, alloc, total) {
+  $(target).innerHTML = CODES.map((code) => {
+    const v = Number(alloc[code] || 0);
+    if (v <= 0 || !total) return "";
+    const pctOf = v / total * 100;
+    return '<span class="' + chClass(code) + '" style="width:' + pctOf.toFixed(3) +
+      '%" title="' + esc(chName(code)) + ": " + nights(v) + " nights (" +
+      pctOf.toFixed(1) + '%)"></span>';
+  }).join("");
+  const direct = Number(alloc.DIRECT || 0);
+  $(target).setAttribute("aria-label",
+    "Direct " + pct(direct / (total || 1)) + " of room nights, across " + CODES.length + " channels");
+}
+
+function renderSimResults(scn) {
+  /* "Current" is the OBSERVED portfolio total, read from PostgreSQL, not a
+     re-evaluation of the current allocation. That is deliberate and matches
+     what ScenarioEngine.evaluate does: it measures every scenario against
+     portfolio.total_net_revenue, never against itself. */
+  const cur = {
+    gross: Number(T.gross_revenue),
+    cost: Number(T.distribution_cost),
+    net: Number(T.net_revenue),
+    costPct: Number(T.distribution_cost_pct),
+    directShare: Number(T.direct_booking_share),
+    roomNights: Number(T.room_nights),
+  };
+
+  $("sim-empty").hidden = true;
+  $("sim-results").hidden = false;
+
+  const d = scn.delta;
+  const negligible = Math.abs(d) < 10000;
+  $("sim-delta").textContent = negligible
+    ? "≈ ₹0"
+    : (d > 0 ? "+" : "−") + inrCr(Math.abs(d));
+  $("sim-delta").className = "v " + (d >= 0 ? "pos" : "neg");
+  $("sim-delta-sub").innerHTML =
+    "from " + inrCr(cur.net) + " observed to " + inrCr(scn.net) + " modelled" +
+    (negligible
+      ? "<br>Within rounding tolerance of the observed baseline &mdash; this mix is " +
+        "materially identical to the one already being sold."
+      : "");
+
+  const cmp = [
+    ["Net revenue", inrCr(cur.net), inrCr(scn.net), inr(scn.net - cur.net), scn.net - cur.net],
+    ["Distribution cost", inrCr(cur.cost), inrCr(scn.cost), inr(scn.cost - cur.cost), -(scn.cost - cur.cost)],
+    ["Distribution cost rate", pct(cur.costPct), pct(scn.costPct),
+      pctSigned(scn.costPct - cur.costPct), -(scn.costPct - cur.costPct)],
+    ["Direct share of nights", pct(cur.directShare), pct(scn.directShare),
+      pctSigned(scn.directShare - cur.directShare), scn.directShare - cur.directShare],
+    ["Room nights", nights(cur.roomNights), nights(scn.roomNights), nights(scn.roomNights - cur.roomNights), null],
+    ["Demand at risk", "0", nights(scn.lost), nights(scn.lost), -scn.lost],
+  ];
+  $("sim-cmp").querySelector("tbody").innerHTML = cmp.map((r) => {
+    const [label, a, b, deltaTxt, good] = r;
+    let cls = "";
+    if (good !== null && Math.abs(good) > 0.005) cls = good > 0 ? "good" : "bad";
+    return "<tr>" +
+      '<th scope="row">' + esc(label) + "</th>" +
+      '<td class="num">' + a + "</td>" +
+      '<td class="num">' + b + "</td>" +
+      '<td class="num ' + cls + '">' + deltaTxt + "</td>" +
+      "</tr>";
+  }).join("");
+
+  renderStack("stack-cur", BASELINE_ALLOC, OBS_TOTAL);
+  renderStack("stack-scn", simAlloc, scn.roomNights);
+  $("cap-cur").textContent = pct(cur.directShare) + " direct";
+  $("cap-scn").textContent = pct(scn.directShare) + " direct";
+
+  $("mix-legend").innerHTML = CODES.map((c) =>
+    '<span class="chip"><i class="' + chClass(c) + '"></i>' + esc(chName(c)) + "</span>"
+  ).join("");
+
+  $("sim-risk-note").innerHTML =
+    "<strong>Demand at risk is not saved revenue.</strong> This scenario models " +
+    nights(scn.lost) + " room nights as withdrawn from the mix and " +
+    nights(scn.gainedDirect) + " as gained direct. Every lost night contributes nothing " +
+    "to the modelled result &mdash; it is absent from it. A positive modelled change " +
+    "depends entirely on the arrival assumptions below, and those assumptions have not " +
+    "been verified against booking behaviour.";
+}
+
+function runSim() {
+  const scn = evaluate(simAlloc);
+
+  if (!scn.feasible) {
+    /* Refuse, do not warn-and-continue. Rendering a rupee figure for an
+       allocation the engine rejects would put an unsupportable number in
+       front of a hotel manager. */
+    renderSimAlert();
+    $("sim-empty").hidden = false;
+    $("sim-results").hidden = true;
+    $("sim-delta").textContent = "—";
+    $("sim-delta").className = "v";
+    $("sim-delta-sub").textContent =
+      "No result. " + (scn.problems[0] || "The allocation is not modellable.");
+    simRan = false;
+    return false;
+  }
+
+  renderSimResults(scn);
+  simRan = true;
+  return true;
+}
+
+function renderAssumptions() {
+  const a = RAW.scenario.assumptions;
+  const conv = a.expected_direct_conversion_rate || {};
+  const incr = a.incremental_rate || {};
+  const rows = CODES.slice().sort().map((c) => {
+    const cv = Number(conv[c] || 0), ic = Number(incr[c] || 0);
+    const addr = RATES[c] && RATES[c].is_addressable !== false;
+    return "<tr>" +
+      '<th scope="row">' + esc(chName(c)) +
+        (addr ? "" : ' <span class="lbl lbl-scenario">Not addressable</span>') + "</th>" +
+      '<td class="num">' + (cv === 0 ? "—" : pct(cv)) + "</td>" +
+      '<td class="num">' + (ic === 0 ? "—" : pct(ic)) + "</td>" +
+      '<td class="num">' + (Math.min(1, cv + ic) === 0 ? "—" : pct(Math.min(1, cv + ic))) + "</td>" +
+      "</tr>";
+  }).join("");
+
+  /* The provenance of an assumption matters as much as the number: these are
+     not observed rates, so the panel must say plainly who chose them. */
+  const SRC_LABEL = {
+    HOTEL_SUPPLIED: "Supplied by the hotel",
+    OBSERVED: "Observed from this dataset",
+    ENGINE_DEFAULT: "Engine default",
+  };
+
+  $("assumptions").innerHTML =
+    '<div class="panel-hd"><h3>Assumptions</h3><span class="lbl lbl-scenario">' +
+      esc(SRC_LABEL[a.source] || titleCase(a.source)) + "</span></div>" +
+    '<div class="tbl-wrap"><table class="data">' +
+      "<thead><tr><th scope=\"col\">Channel withdrawn from</th>" +
+      '<th scope="col" class="num">Expected to arrive direct</th>' +
+      '<th scope="col" class="num">Incremental to other channels</th>' +
+      '<th scope="col" class="num">Expected to arrive</th></tr></thead>' +
+      "<tbody>" + rows + "</tbody></table></div>" +
+    '<p style="padding:10px 12px;font-size:11px;color:var(--dim);border-top:1px solid var(--line)">' +
+    "Walk-in is excluded as a destination: nobody decides to send a guest to the front " +
+    "desk. Its arrival rate is shown for completeness only. Objective: " +
+    esc(titleCase(a.objective)) + " &middot; maximum shift on any one channel: " +
+    pct(Number(a.max_shift_fraction)) + ".</p>";
+}
+
+/* =====================================================================
+   05  Recommendations - an operations table
+   ===================================================================== */
+function renderRecs() {
+  const recs = RAW.recommendations || [];
+  if (!recs.length) {
+    $("recs").innerHTML = '<div class="empty"><h4>No recommendations</h4>' +
+      "<p>Not enough observed data to state any honestly.</p></div>";
+    return;
+  }
+  const chip = (t) => {
+    const cls = t === "OBSERVED" ? "lbl-observed"
+              : t === "MODELLED_ESTIMATE" ? "lbl-modelled" : "lbl-scenario";
+    return '<span class="lbl ' + cls + '">' + esc(titleCase(t)) + "</span>";
+  };
+  const band = (p) => p >= 66 ? "HIGH" : p >= 33 ? "MEDIUM" : "LOW";
+
+  $("recs").innerHTML =
+    '<table class="recs">' +
+      "<thead><tr>" +
+        '<th scope="col">Priority</th>' +
+        '<th scope="col">Channel</th>' +
+        '<th scope="col">Observation</th>' +
+        '<th scope="col">Action</th>' +
+        '<th scope="col">Basis</th>' +
+      "</tr></thead><tbody>" +
+    recs.map((r) => {
+      const prio = Math.max(0, Math.min(100, r.priority || 0));
+      return '<tr class="rec-row">' +
+        '<td class="rec-prio"><span class="prio-tag ' + band(prio) + '">' + band(prio) + "</span>" +
+          '<span class="prio-meter"><i style="width:' + prio + '%"></i></span>' +
+          '<span class="prio-num">' + prio + " / 100</span></td>" +
+        '<td class="rec-ch">' + (r.channel_code ? esc(chName(r.channel_code)) : "Portfolio") + "</td>" +
+        "<td>" +
+          '<div class="rec-block"><div class="v" style="color:var(--text)">' + esc(r.title) + "</div></div>" +
+          '<div class="rec-block evidence"><div class="k">Evidence</div><div class="v">' +
+            esc(r.evidence) + "</div></div>" +
+        "</td>" +
+        "<td>" +
+          (r.action ? '<div class="rec-block action"><div class="k">Action</div><div class="v">' +
+            esc(r.action) + "</div></div>" : "") +
+          (r.expected_impact ? '<div class="rec-block impact"><div class="k">Impact</div><div class="v">' +
+            esc(r.expected_impact) + "</div></div>" : "") +
+        "</td>" +
+        "<td>" +
+          '<div class="rec-block"><div class="k">Basis</div><div class="v">' +
+            chip(r.evidence_type) + "</div></div>" +
+          '<div class="rec-block"><div class="v">' + esc(r.confidence) +
+            " confidence in the evidence</div></div>" +
+          (r.assumption ? '<div class="rec-block assumption"><div class="k">Assumes</div><div class="v">' +
+            esc(r.assumption) + " This has not been verified.</div></div>" : "") +
+        "</td>" +
+      "</tr>";
+    }).join("") +
+    "</tbody></table>";
+}
+
+/* =====================================================================
+   06  Bookings
+   ===================================================================== */
+const BK = (SIM.bookings || []).slice();
+const PAGE = 40;
+let bkPage = 0, bkFiltered = BK.slice();
+
+function renderBookingFilters() {
+  const sel = $("bk-channel");
+  const codes = {};
+  BK.forEach((b) => { codes[b.channel] = true; });
+  Object.keys(codes).sort().forEach((c) => {
+    const o = document.createElement("option");
+    o.value = c; o.textContent = chName(c);
+    sel.appendChild(o);
+  });
+  const dates = BK.map((b) => b.date).sort();
+  $("bk-from").value = dates[0];
+  $("bk-to").value = dates[dates.length - 1];
+  $("bk-from").min = dates[0]; $("bk-from").max = dates[dates.length - 1];
+  $("bk-to").min = dates[0]; $("bk-to").max = dates[dates.length - 1];
+}
+
+function applyBookingFilters() {
+  const q = $("bk-q").value.trim().toUpperCase();
+  const ch = $("bk-channel").value;
+  const from = $("bk-from").value;
+  const to = $("bk-to").value;
+  const sort = $("bk-sort").value;
+
+  bkFiltered = BK.filter((b) => {
+    if (q && b.ref.toUpperCase().indexOf(q) === -1) return false;
+    if (ch && b.channel !== ch) return false;
+    if (from && b.date < from) return false;
+    if (to && b.date > to) return false;
+    return true;
+  });
+
+  const dir = sort.indexOf("_asc") > 0 ? 1 : -1;
+  const key = sort.replace(/_(asc|desc)$/, "");
+  bkFiltered.sort((a, b) => {
+    let d;
+    if (key === "cost_pct") {
+      d = (Number(a.gross) ? Number(a.cost) / Number(a.gross) : 0) -
+          (Number(b.gross) ? Number(b.cost) / Number(b.gross) : 0);
+    } else if (key === "date") {
+      d = a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
+    } else {
+      d = Number(a[key]) - Number(b[key]);
+    }
+    return d * dir;
+  });
+
+  bkPage = 0;
+  renderBookings();
+}
+
+function renderBookings() {
+  const total = bkFiltered.length;
+  const pages = Math.max(1, Math.ceil(total / PAGE));
+  if (bkPage >= pages) bkPage = pages - 1;
+  const slice = bkFiltered.slice(bkPage * PAGE, bkPage * PAGE + PAGE);
+
+  $("bk-count").innerHTML = total
+    ? "Showing <b>" + (bkPage * PAGE + 1) + "&ndash;" + Math.min(total, (bkPage + 1) * PAGE) +
+      "</b> of <b>" + num(total) + "</b> matching bookings &middot; gross <b>" +
+      inrCr(bkFiltered.reduce((a, b) => a + Number(b.gross), 0)) +
+      "</b> &middot; cost <b>" + inrCr(bkFiltered.reduce((a, b) => a + Number(b.cost), 0)) +
+      "</b> &middot; net <b>" + inrCr(bkFiltered.reduce((a, b) => a + Number(b.net), 0)) + "</b>"
+    : "No bookings match these filters.";
+
+  $("bk-page").textContent = "Page " + (bkPage + 1) + " / " + pages;
+  $("bk-prev").disabled = bkPage === 0;
+  $("bk-next").disabled = bkPage >= pages - 1;
+
+  if (!slice.length) {
+    $("bk-body").innerHTML = "";
+    const e = $("bk-empty");
+    e.hidden = false;
+    e.innerHTML = '<div class="empty"><h4>No matching bookings</h4>' +
+      "<p>Try clearing the search or widening the date range.</p></div>";
+    return;
+  }
+  $("bk-empty").hidden = true;
+
+  $("bk-body").innerHTML = slice.map((b) => {
+    const rate = Number(b.gross) ? Number(b.cost) / Number(b.gross) : 0;
+    return "<tr>" +
+      '<th scope="row" class="mono" style="font-size:11px">' + esc(b.ref) + "</th>" +
+      '<td class="nowrap">' + esc(b.date) + "</td>" +
+      "<td>" + esc(chName(b.channel)) + "</td>" +
+      '<td class="num">' + num(b.nights) + "</td>" +
+      '<td class="num">' + inr(b.gross) + "</td>" +
+      '<td class="num bad">' + inr(b.cost) +
+        '<span class="cellsub">' + pct(rate) + "</span></td>" +
+      '<td class="num" style="color:var(--good)">' + inr(b.net) + "</td>" +
+      '<td class="num">' + inr(b.net_adr, 0) + "</td>" +
+    "</tr>";
+  }).join("");
+}
+
+/* =====================================================================
+   Shell: nav, topbar, trend
+   ===================================================================== */
+const NAV_META = {
+  overview:       ["Overview", "Gross to net revenue"],
+  leakage:        ["Money Leakage", "Distribution cost by component"],
+  channels:       ["Channel Economics", "Volume against retained value"],
+  simulator:      ["Mix Simulator", "Model a different mix"],
+  recommendations:["Recommendations", "What to do next"],
+  bookings:       ["Bookings", "The ledger behind every total"],
+};
+
+function renderShell() {
+  const h = RAW.hotel;
+  $("sb-hotel").textContent = h.code + " · " + h.total_rooms + " rooms";
+  $("sb-period").textContent = fmtDate(h.period_start) + " – " + fmtDate(h.period_end);
+  $("tb-hotel").textContent = h.code;
+  $("tb-period").textContent = fmtDate(h.period_start) + " – " + fmtDate(h.period_end);
+  $("tb-period").setAttribute("title", h.period_start + " to " + h.period_end);
+  $("tb-status").textContent = "Reconciled · 0 mismatches";
+
+  $("foot-basis").innerHTML =
+    "Basis: " + RAW.generated_at_basis + "<br>" +
+    num(T.bookings) + " bookings · " + nights(T.room_nights) + " room nights · " +
+    h.period_start + " to " + h.period_end + "<br>" +
+    "Source: " + RAW.data_source.replace(/_/g, " ").toLowerCase() + ".";
+
+  const links = Array.prototype.slice.call(document.querySelectorAll("[data-nav]"));
+  links.forEach((a) => {
+    a.addEventListener("click", () => {
+      links.forEach((o) => o.removeAttribute("aria-current"));
+      a.setAttribute("aria-current", "true");
+    });
+  });
+  if (links[0]) links[0].setAttribute("aria-current", "true");
+
+  if ("IntersectionObserver" in window) {
+    const obs = new IntersectionObserver((entries) => {
+      entries.forEach((e) => {
+        if (!e.isIntersecting) return;
+        const id = e.target.id;
+        links.forEach((a) =>
+          a.setAttribute("aria-current", String(a.getAttribute("href") === "#" + id)));
+        const m = NAV_META[id];
+        if (m) { $("page-title").textContent = m[0]; $("page-crumb").textContent = m[1]; }
+      });
+    }, { rootMargin: "-70px 0px -70% 0px", threshold: 0 });
+    Object.keys(NAV_META).forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) obs.observe(el);
+    });
+  }
+}
+
+function renderTrend() {
+  /* the monthly series is a panel above the ledger rather than its own
+     section: the ledger already carries the same information at a finer grain,
+     and a duplicate chart is noise. */
+  const host = document.createElement("div");
+  host.id = "trend";
+  host.className = "panel";
+  $("trend-mount").appendChild(host);
+
+  const m = RAW.monthly || [];
+  if (!m.length) {
+    host.innerHTML = '<div class="panel-bd"><div class="empty">No monthly data.</div></div>';
+    return;
+  }
+
+  const W = 1160, H = 190, PL = 62, PR = 8, PT = 8, PB = 30;
+  const iw = W - PL - PR, ih = H - PT - PB;
+  const max = Math.max.apply(null, m.map((d) => Number(d.gross_revenue)).concat([1]));
+  const niceMax = Math.ceil(max / 1e6) * 1e6 || max;
+  const slot = iw / m.length;
+  const bw = Math.max(4, Math.min(20, slot * 0.38));
+
+  let g = '<g transform="translate(0,0)">';
+  for (let i = 0; i <= 3; i++) {
+    const y = PT + (ih * i) / 3;
+    g += '<line class="gridline" x1="' + PL + '" y1="' + y.toFixed(1) + '" x2="' + (W - PR) + '" y2="' + y.toFixed(1) + '"/>' +
+      '<text class="tick" x="' + (PL - 7) + '" y="' + (y + 3.5).toFixed(1) + '" text-anchor="end">' + inrCr(niceMax * (1 - i / 3)) + "</text>";
+  }
+  m.forEach((d, i) => {
+    const x = PL + slot * i + (slot - bw) / 2;
+    const gh = Number(d.gross_revenue) / niceMax * ih;
+    const nh = Number(d.net_revenue) / niceMax * ih;
+    g += '<rect class="trend-gross" x="' + x.toFixed(1) + '" y="' + (PT + ih - gh).toFixed(1) +
+      '" width="' + bw.toFixed(1) + '" height="' + gh.toFixed(1) + '"><title>' +
+      esc(d.month) + " gross " + inr(d.gross_revenue) + "</title></rect>";
+    g += '<rect class="trend-net" x="' + x.toFixed(1) + '" y="' + (PT + ih - nh).toFixed(1) +
+      '" width="' + bw.toFixed(1) + '" height="' + nh.toFixed(1) + '"><title>' +
+      esc(d.month) + " net " + inr(d.net_revenue) + "</title></rect>";
+    if (i % 2 === 0 || i === m.length - 1) {
+      g += '<text class="tick" x="' + (x + bw / 2).toFixed(1) + '" y="' + (PT + ih + 13) +
+        '" text-anchor="middle">' + esc(d.month.slice(0, 7)) + "</text>";
+      g += '<text class="tick" x="' + (x + bw / 2).toFixed(1) + '" y="' + (PT + ih + 24) +
+        '" text-anchor="middle" class="trend-cost">' + pct(d.distribution_cost_pct, 1) + "</text>";
+    }
+  });
+  g += '<line class="axis" x1="' + PL + '" y1="' + (PT + ih) + '" x2="' + (W - PR) + '" y2="' + (PT + ih) + '"/>';
+  g += "</g>";
+
+  host.innerHTML =
+    '<div class="panel-hd"><h3>Monthly gross and net room revenue</h3>' +
+      '<span class="dim" style="font-size:10.5px">Amber figure under each month is that month’s distribution cost rate</span></div>' +
+    '<div class="trend-wrap"><svg viewBox="0 0 ' + W + " " + H +
+    '" preserveAspectRatio="none" role="img" ' +
+    "aria-label='Monthly gross and net room revenue'>" + g + "</svg></div>";
+}
+
+/* =====================================================================
+   Wiring
+   ===================================================================== */
+function wire() {
+  /* channel table sorting */
+  $("chan-head").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-sort]");
+    if (!btn) return;
+    const key = btn.getAttribute("data-sort");
+    if (chanSort.key === key) chanSort.dir = chanSort.dir === "desc" ? "asc" : "desc";
+    else chanSort = { key: key, dir: "desc" };
+    renderChannelTable();
+  });
+
+  /* simulator */
+  document.addEventListener("input", (e) => {
+    const s = e.target.getAttribute && e.target.getAttribute("data-slider");
+    const n = e.target.getAttribute && e.target.getAttribute("data-number");
+    if (s && !e.target.disabled) {
+      simAlloc[s] = Number(e.target.value);
+      renderSimControls(); renderSimAlert();
+      if (simRan) runSim();
+    } else if (n && !e.target.disabled) {
+      const raw = e.target.value;
+      const v = Number(raw);
+      /* An empty or non-numeric field is stored as NaN on purpose: it keeps the
+         literal the user typed on screen and lets evaluate() refuse the
+         scenario, instead of a silent Number("") -> 0 reading as "no nights". */
+      simRaw[n] = raw;
+      simAlloc[n] = (raw === "" || raw === "-" || raw === "." || isNaN(v)) ? NaN : v;
+      renderSimControls(); renderSimAlert();
+      if (simRan) runSim();
+    }
+  });
+
+  /* commit an edit once the field is left */
+  document.addEventListener("change", (e) => {
+    const n = e.target.getAttribute && e.target.getAttribute("data-number");
+    if (!n) return;
+    delete simRaw[n];
+    const v = Number(simAlloc[n]);
+    if (typeof v !== "number" || !isFinite(v)) simAlloc[n] = Number(BASELINE_ALLOC[n] || 0);
+    renderSimControls(); renderSimAlert();
+    if (simRan) runSim();
+  });
+
+  $("preset-current").addEventListener("click", () => {
+    simRaw = {};
+    simAlloc = Object.assign({}, BASELINE_ALLOC);
+    renderSimControls(); renderSimAlert();
+    $("sim-results").hidden = true; $("sim-empty").hidden = false; simRan = false;
+  });
+  $("preset-engine").addEventListener("click", () => {
+    simRaw = {};
+    simAlloc = Object.assign({}, SIM.engine_preset.allocation);
+    renderSimControls(); renderSimAlert(); runSim();
+  });
+  /* Withdrawing OTA volume without reallocating it is not a strategy, it is
+     just lost demand - and the engine correctly scores it as a large loss.
+     This preset therefore mirrors GreedyMarginalAllocator exactly: withdraw
+     25% of each OTA's nights, and deposit only the fraction the hotel's own
+     arrival assumption says will come back, into direct. The remainder shows
+     up as demand at risk. */
+  $("preset-cutota").addEventListener("click", () => {
+    simRaw = {};
+    simAlloc = Object.assign({}, BASELINE_ALLOC);
+    ["OTA_ALPHA", "OTA_BETA"].forEach((c) => {
+      const r = RATES[c];
+      const have = Number(simAlloc[c] || 0);
+      const withdraw = q4(have * 0.25);
+      const arrival = Math.min(
+        1,
+        Number(r.expected_direct_conversion_rate) + Number(r.incremental_rate)
+      );
+      simAlloc[c] = q4(have - withdraw);
+      simAlloc.DIRECT = q4(Number(simAlloc.DIRECT) + withdraw * arrival);
+    });
+    renderSimControls(); renderSimAlert(); runSim();
+  });
+  $("run-scenario").addEventListener("click", runSim);
+  $("reset-sim").addEventListener("click", () => {
+    simReset(); renderSimControls(); renderSimAlert();
+    $("sim-results").hidden = true; $("sim-empty").hidden = false;
+  });
+
+  /* bookings */
+  ["bk-q", "bk-channel", "bk-from", "bk-to", "bk-sort"].forEach((id) => {
+    const el = $(id);
+    el.addEventListener("input", applyBookingFilters);
+    el.addEventListener("change", applyBookingFilters);
+  });
+  $("bk-prev").addEventListener("click", () => { if (bkPage > 0) { bkPage--; renderBookings(); } });
+  $("bk-next").addEventListener("click", () => { bkPage++; renderBookings(); });
+
+  /* synthetic badge: a plain, honest explanation on demand */
+  const detail = document.getElementById("synthetic-detail");
+  detail.innerHTML =
+    "<p><b>Synthetic demo dataset.</b> " + esc(RAW.demo_warning) + "</p>" +
+    "<p>" + num(T.bookings) + " bookings across " + CODES.length +
+    " channels were generated by <code>scripts/generate_demo_data.py</code> with a " +
+    "fixed RNG seed, then loaded into PostgreSQL and read back through the same " +
+    "pipeline a real hotel would use. Nothing here is a real hotel's performance, " +
+    "and no figure on this page is a forecast.</p>";
+  $("synthetic-badge").addEventListener("click", () => {
+    detail.hidden = !detail.hidden;
+    $("synthetic-badge").setAttribute("aria-expanded", detail.hidden ? "false" : "true");
+  });
+}
+
+/* ---- go ---- */
+renderShell();
+renderOverview();
+renderLeakage();
+renderChannelTable();
+renderGaps();
+renderGrossNetBars();
+renderKpis();
+renderSimControls();
+renderSimAlert();
+renderAssumptions();
+renderRecs();
+renderBookingFilters();
+renderBookings();
+renderTrend();
+wire();
+</script>
+</body>
+</html>

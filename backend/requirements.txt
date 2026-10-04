@@ -1,0 +1,21 @@
+# D6 DISTRIBOX - backend dependencies
+# Core API
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+pydantic==2.13.5
+pydantic-settings==2.15.0
+python-multipart==0.0.32
+httpx==0.28.1
+
+# Persistence
+SQLAlchemy==2.1.3
+alembic==1.20.0
+psycopg[binary]==3.3.6
+
+# Analytics
+pandas==3.0.6
+numpy==2.4.6
+scikit-learn==1.9.1
+
+# Optimization
+ortools==9.15.6755
